@@ -4,3 +4,7 @@ networkx
 folium
 streamlit-folium
 pulp
+osmnx
+scikit-learn
+geopy
+streamlit-geolocation

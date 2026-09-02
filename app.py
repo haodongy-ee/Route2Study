@@ -1,24 +1,31 @@
+import html
 import math
 from datetime import date, datetime, time
 from pathlib import Path
 
 import folium
+import networkx as nx
+import osmnx as ox
 import pandas as pd
 import streamlit as st
+from geopy.exc import GeocoderServiceError, GeocoderTimedOut
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 from streamlit_folium import st_folium
+from streamlit_geolocation import streamlit_geolocation
 
 
-st.set_page_config(
-    page_title="Route2Study",
-    layout="wide",
-)
+st.set_page_config(page_title="Route2Study", layout="wide")
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_FILE = PROJECT_ROOT / "data" / "locations.csv"
+NETWORK_FILE = PROJECT_ROOT / "data" / "penn_walking_network.graphml"
 
-DATA_FILE = Path(__file__).resolve().parent / "data" / "locations.csv"
-WALKING_SPEED_MPH = 3.0
-ROUTE_DISTANCE_FACTOR = 1.25
+CAMPUS_CENTER = (39.9522, -75.1930)
+WALKING_SPEED_METERS_PER_MINUTE = 80
 TRANSITION_BUFFER_MINUTES = 10
 MINIMUM_STUDY_MINUTES = 15
+MAX_NETWORK_SNAP_METERS = 500
 
 REQUIRED_COLUMNS = {
     "name",
@@ -43,9 +50,7 @@ PREFERENCE_COLUMNS = {
 @st.cache_data
 def load_locations(file_path):
     if not file_path.exists():
-        raise FileNotFoundError(
-            f"Location data was not found at: {file_path}"
-        )
+        raise FileNotFoundError(f"Location data was not found at: {file_path}")
 
     data = pd.read_csv(file_path)
     missing_columns = REQUIRED_COLUMNS - set(data.columns)
@@ -57,37 +62,101 @@ def load_locations(file_path):
     return data
 
 
-def haversine_distance(location_1, location_2):
-    """Return straight-line distance between two points in miles."""
+@st.cache_resource
+def load_walking_network(file_path):
+    if not file_path.exists():
+        raise FileNotFoundError(f"Walking network was not found at: {file_path}")
 
-    earth_radius_miles = 3958.8
+    return ox.io.load_graphml(filepath=file_path)
 
-    latitude_1 = math.radians(location_1["latitude"])
-    longitude_1 = math.radians(location_1["longitude"])
-    latitude_2 = math.radians(location_2["latitude"])
-    longitude_2 = math.radians(location_2["longitude"])
 
-    latitude_difference = latitude_2 - latitude_1
-    longitude_difference = longitude_2 - longitude_1
+@st.cache_data(ttl=86400, show_spinner=False)
+def geocode_address(address_query):
+    """Convert one user-submitted Philadelphia address to coordinates."""
 
-    a = (
-        math.sin(latitude_difference / 2) ** 2
-        + math.cos(latitude_1)
-        * math.cos(latitude_2)
-        * math.sin(longitude_difference / 2) ** 2
+    geolocator = Nominatim(
+        user_agent=(
+            "Route2Study/1.0 "
+            "(https://github.com/haodongy-ee/Route2Study)"
+        )
+    )
+    geocode = RateLimiter(
+        geolocator.geocode,
+        min_delay_seconds=1,
+        swallow_exceptions=False,
+    )
+    result = geocode(
+        address_query,
+        exactly_one=True,
+        country_codes="us",
+        viewbox=[(39.85, -75.35), (40.10, -74.95)],
+        bounded=True,
+        timeout=10,
     )
 
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return earth_radius_miles * c
+    if result is None:
+        return None
+
+    return {
+        "query": address_query,
+        "label": result.address,
+        "latitude": float(result.latitude),
+        "longitude": float(result.longitude),
+    }
 
 
-def estimate_walking_minutes(location_1, location_2):
-    """Estimate walking time using distance and a campus-route factor."""
+def nearest_network_distance(graph, location):
+    _, distance = ox.distance.nearest_nodes(
+        graph,
+        X=location["longitude"],
+        Y=location["latitude"],
+        return_dist=True,
+    )
+    return float(distance)
 
-    distance = haversine_distance(location_1, location_2)
-    adjusted_distance = distance * ROUTE_DISTANCE_FACTOR
-    minutes = (adjusted_distance / WALKING_SPEED_MPH) * 60
-    return max(0, round(minutes))
+
+def calculate_network_route(graph, location_1, location_2):
+    """Calculate a shortest route on the pedestrian street graph."""
+
+    origin_node = ox.distance.nearest_nodes(
+        graph,
+        X=location_1["longitude"],
+        Y=location_1["latitude"],
+    )
+    destination_node = ox.distance.nearest_nodes(
+        graph,
+        X=location_2["longitude"],
+        Y=location_2["latitude"],
+    )
+
+    if origin_node == destination_node:
+        return {
+            "route_nodes": [origin_node],
+            "distance_meters": 0,
+            "walking_minutes": 0,
+        }
+
+    try:
+        route_nodes = nx.shortest_path(
+            graph,
+            source=origin_node,
+            target=destination_node,
+            weight="length",
+        )
+    except nx.NetworkXNoPath:
+        return None
+
+    route_edges = ox.routing.route_to_gdf(graph, route_nodes, weight="length")
+    distance_meters = float(route_edges["length"].sum())
+    walking_minutes = math.ceil(
+        distance_meters / WALKING_SPEED_METERS_PER_MINUTE
+    )
+
+    return {
+        "route_nodes": route_nodes,
+        "distance_meters": round(distance_meters),
+        "walking_minutes": walking_minutes,
+    }
 
 
 def preference_score(location, preference):
@@ -99,53 +168,50 @@ def preference_score(location, preference):
             + location["outlet_score"]
         ) / 4
 
-    score_column = PREFERENCE_COLUMNS[preference]
-    return location[score_column]
+    return location[PREFERENCE_COLUMNS[preference]]
 
 
 def recommend_study_spaces(
-    start_name,
-    destination_name,
+    graph,
+    start_location,
+    destination_location,
     available_minutes,
     preference,
     location_lookup,
     study_location_names,
 ):
     recommendations = []
-    start = location_lookup[start_name]
-    destination = location_lookup[destination_name]
 
     for study_name in study_location_names:
         study_location = location_lookup[study_name]
-
-        walk_to_study = estimate_walking_minutes(
-            start,
-            study_location,
+        route_to_study = calculate_network_route(
+            graph, start_location, study_location
+        )
+        route_to_class = calculate_network_route(
+            graph, study_location, destination_location
         )
 
-        walk_to_class = estimate_walking_minutes(
-            study_location,
-            destination,
-        )
+        if route_to_study is None or route_to_class is None:
+            continue
 
+        walk_to_study = route_to_study["walking_minutes"]
+        walk_to_class = route_to_class["walking_minutes"]
         total_walking = walk_to_study + walk_to_class
+        total_distance = (
+            route_to_study["distance_meters"]
+            + route_to_class["distance_meters"]
+        )
         study_minutes = (
-            available_minutes
-            - total_walking
-            - TRANSITION_BUFFER_MINUTES
+            available_minutes - total_walking - TRANSITION_BUFFER_MINUTES
         )
 
         if study_minutes < MINIMUM_STUDY_MINUTES:
             continue
 
-        preference_match = preference_score(
-            study_location,
-            preference,
-        )
-
+        match_score = preference_score(study_location, preference)
         final_score = (
             study_minutes
-            + 15 * preference_match
+            + 15 * match_score
             + 2 * study_location["outlet_score"]
             - 0.5 * total_walking
         )
@@ -156,9 +222,12 @@ def recommend_study_spaces(
                 "walk_to_study": walk_to_study,
                 "walk_to_class": walk_to_class,
                 "total_walking": total_walking,
+                "total_distance": total_distance,
                 "study_minutes": study_minutes,
-                "preference_match": round(preference_match, 1),
+                "preference_match": round(match_score, 1),
                 "final_score": round(final_score, 1),
+                "route_to_study": route_to_study,
+                "route_to_class": route_to_class,
             }
         )
 
@@ -178,72 +247,101 @@ def add_marker(campus_map, location, label, color, tooltip):
     ).add_to(campus_map)
 
 
-def create_route_map(
-    start_name,
-    destination_name,
-    location_lookup,
-    study_name=None,
-):
-    start = location_lookup[start_name]
-    destination = location_lookup[destination_name]
+def add_route_line(campus_map, graph, route_result, color, tooltip):
+    if not route_result:
+        return
 
-    campus_map = folium.Map(
-        location=[39.9522, -75.1930],
-        zoom_start=16,
+    route_coordinates = [
+        (graph.nodes[node]["y"], graph.nodes[node]["x"])
+        for node in route_result["route_nodes"]
+    ]
+
+    if len(route_coordinates) >= 2:
+        folium.PolyLine(
+            locations=route_coordinates,
+            color=color,
+            weight=6,
+            opacity=0.9,
+            tooltip=tooltip,
+        ).add_to(campus_map)
+
+
+def create_route_map(
+    graph,
+    start_location,
+    start_label,
+    destination_location,
+    destination_label,
+    study_location=None,
+    study_label=None,
+    first_route=None,
+    second_route=None,
+):
+    route_map = folium.Map(
+        location=CAMPUS_CENTER,
+        zoom_start=15,
         tiles="OpenStreetMap",
     )
 
+    add_marker(route_map, start_location, start_label, "green", "Starting point")
     add_marker(
-        campus_map,
-        start,
-        start_name,
-        "green",
-        "First class",
-    )
-
-    add_marker(
-        campus_map,
-        destination,
-        destination_name,
+        route_map,
+        destination_location,
+        destination_label,
         "red",
-        "Next class",
+        "Destination class",
     )
 
-    route_points = [
-        [start["latitude"], start["longitude"]],
+    marker_points = [
+        [start_location["latitude"], start_location["longitude"]],
+        [destination_location["latitude"], destination_location["longitude"]],
     ]
 
-    if study_name:
-        study_location = location_lookup[study_name]
+    if study_location and study_label:
         add_marker(
-            campus_map,
+            route_map,
             study_location,
-            study_name,
+            study_label,
             "blue",
             "Recommended study location",
         )
-        route_points.append(
-            [
-                study_location["latitude"],
-                study_location["longitude"],
-            ]
+        marker_points.append(
+            [study_location["latitude"], study_location["longitude"]]
         )
 
-    route_points.append(
-        [destination["latitude"], destination["longitude"]]
+    first_tooltip = (
+        "To study space" if study_location else "Direct route to class"
+    )
+    add_route_line(
+        route_map, graph, first_route, "#2563EB", first_tooltip
+    )
+    add_route_line(route_map, graph, second_route, "#7C3AED", "To class")
+    route_map.fit_bounds(marker_points, padding=(40, 40))
+    return route_map
+
+
+def create_pin_picker(existing_pin=None):
+    center = CAMPUS_CENTER
+    if existing_pin:
+        center = (existing_pin["latitude"], existing_pin["longitude"])
+
+    picker_map = folium.Map(
+        location=center,
+        zoom_start=15,
+        tiles="OpenStreetMap",
     )
 
-    folium.PolyLine(
-        locations=route_points,
-        color="#4F46E5",
-        weight=6,
-        opacity=0.85,
-        dash_array="10",
-        tooltip="Prototype route",
-    ).add_to(campus_map)
+    if existing_pin:
+        add_marker(
+            picker_map,
+            existing_pin,
+            "Selected starting point",
+            "green",
+            "Selected starting point",
+        )
 
-    campus_map.fit_bounds(route_points, padding=(40, 40))
-    return campus_map
+    folium.LatLngPopup().add_to(picker_map)
+    return picker_map
 
 
 st.markdown(
@@ -254,31 +352,16 @@ st.markdown(
             padding-top: 2rem;
             padding-bottom: 3rem;
         }
-
         .hero {
             padding: 30px;
             border-radius: 20px;
             color: white;
-            background: linear-gradient(
-                120deg,
-                #4338CA,
-                #2563EB,
-                #0891B2
-            );
+            background: linear-gradient(120deg, #4338CA, #2563EB, #0891B2);
             margin-bottom: 25px;
             box-shadow: 0 10px 30px rgba(37, 99, 235, 0.18);
         }
-
-        .hero h1 {
-            margin: 0;
-            font-size: 44px;
-        }
-
-        .hero p {
-            margin: 8px 0 0 0;
-            font-size: 18px;
-        }
-
+        .hero h1 { margin: 0; font-size: 44px; }
+        .hero p { margin: 8px 0 0 0; font-size: 18px; }
         .recommendation-card {
             padding: 22px;
             border: 1px solid #BFDBFE;
@@ -287,23 +370,15 @@ st.markdown(
             background: #EFF6FF;
             margin: 12px 0 22px 0;
         }
-
         .recommendation-card h3 {
             margin: 0 0 8px 0;
             color: #1E3A8A;
         }
-
-        .recommendation-card p {
-            margin: 4px 0;
-            color: #1F2937;
-        }
+        .recommendation-card p { margin: 4px 0; color: #1F2937; }
     </style>
-
     <div class="hero">
         <h1>Route2Study</h1>
-        <p>
-            Turn the time between classes into productive study time.
-        </p>
+        <p>Start anywhere near Penn and turn free time into study time.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -312,54 +387,117 @@ st.markdown(
 
 try:
     locations_df = load_locations(DATA_FILE)
+    walking_graph = load_walking_network(NETWORK_FILE)
 except (FileNotFoundError, ValueError) as error:
     st.error(str(error))
     st.info(
-        "Confirm that data/locations.csv exists and contains "
-        "all required columns."
+        "Confirm that data/locations.csv and "
+        "data/penn_walking_network.graphml both exist."
     )
     st.stop()
 
-
-location_lookup = (
-    locations_df.set_index("name").to_dict(orient="index")
-)
-
+location_lookup = locations_df.set_index("name").to_dict(orient="index")
 class_location_names = locations_df.loc[
-    locations_df["can_be_class"] == 1,
-    "name",
+    locations_df["can_be_class"] == 1, "name"
+].tolist()
+study_location_names = locations_df.loc[
+    locations_df["can_be_study"] == 1, "name"
 ].tolist()
 
-study_location_names = locations_df.loc[
-    locations_df["can_be_study"] == 1,
-    "name",
-].tolist()
+start_location = None
+start_label = None
+location_accuracy = None
 
 
 with st.sidebar:
     st.header("Plan Your Day")
-
-    first_location = st.selectbox(
-        "First class",
-        class_location_names,
+    start_mode = st.selectbox(
+        "Starting point method",
+        [
+            "Campus building",
+            "Street address",
+            "Drop a pin",
+            "Current location",
+        ],
     )
 
-    first_class_end = st.time_input(
-        "First class ends",
-        value=time(11, 30),
-    )
+    if start_mode == "Campus building":
+        start_label = st.selectbox("Starting building", class_location_names)
+        start_location = location_lookup[start_label]
 
-    next_location = st.selectbox(
-        "Next class",
+    elif start_mode == "Street address":
+        address_query = st.text_input(
+            "Starting address",
+            placeholder="3900 Chestnut Street, Philadelphia, PA",
+        ).strip()
+
+        if st.button("Find address", width="stretch"):
+            if not address_query:
+                st.warning("Enter an address first.")
+            else:
+                try:
+                    with st.spinner("Finding address..."):
+                        result = geocode_address(address_query)
+
+                    if result is None:
+                        st.session_state.pop("address_location", None)
+                        st.error("Address not found near Philadelphia.")
+                    else:
+                        st.session_state.address_location = result
+                except (GeocoderTimedOut, GeocoderServiceError):
+                    st.error(
+                        "The address service is temporarily unavailable. "
+                        "Try again or use a map pin."
+                    )
+
+        saved_address = st.session_state.get("address_location")
+        if saved_address and saved_address.get("query") == address_query:
+            start_location = saved_address
+            start_label = saved_address["label"]
+            st.success(f"Found: {start_label}")
+
+        st.caption(
+            "Do not include an apartment or room number. "
+            "Address searches use OpenStreetMap Nominatim."
+        )
+
+    elif start_mode == "Drop a pin":
+        saved_pin = st.session_state.get("pinned_location")
+        if saved_pin:
+            start_location = saved_pin
+            start_label = "Pinned starting point"
+            st.success("A starting point is selected on the map.")
+        else:
+            st.info("Use the map in the main panel to select a point.")
+
+    else:
+        st.caption("Press the location button below and allow browser access.")
+        current_location = streamlit_geolocation()
+
+        if (
+            isinstance(current_location, dict)
+            and current_location.get("latitude") is not None
+            and current_location.get("longitude") is not None
+        ):
+            st.session_state.current_location = current_location
+
+        saved_current_location = st.session_state.get("current_location")
+        if saved_current_location:
+            start_location = {
+                "latitude": float(saved_current_location["latitude"]),
+                "longitude": float(saved_current_location["longitude"]),
+            }
+            start_label = "Current location"
+            location_accuracy = saved_current_location.get("accuracy")
+            st.success("Current location received.")
+
+    available_from = st.time_input("Available from", value=time(11, 30))
+    destination_label = st.selectbox(
+        "Destination class",
         class_location_names,
         index=min(1, len(class_location_names) - 1),
     )
-
-    next_class_start = st.time_input(
-        "Next class starts",
-        value=time(14, 0),
-    )
-
+    class_start_time = st.time_input("Class starts", value=time(14, 0))
     study_preference = st.selectbox(
         "Study preference",
         [
@@ -371,99 +509,130 @@ with st.sidebar:
         ],
     )
 
-    st.caption(
-        "Walking times are prototype estimates and do not yet "
-        "follow the street network."
+
+if start_mode == "Drop a pin":
+    st.subheader("Choose Your Starting Point")
+    st.write("Click anywhere on the map to place the starting pin.")
+    existing_pin = st.session_state.get("pinned_location")
+    picker_map = create_pin_picker(existing_pin)
+    picker_result = st_folium(
+        picker_map,
+        width=1100,
+        height=390,
+        key="start_location_picker",
+        returned_objects=["last_clicked"],
     )
+    clicked_point = picker_result.get("last_clicked") if picker_result else None
+
+    if clicked_point:
+        new_pin = {
+            "latitude": float(clicked_point["lat"]),
+            "longitude": float(clicked_point["lng"]),
+        }
+        if new_pin != existing_pin:
+            st.session_state.pinned_location = new_pin
+            st.rerun()
+
+    if existing_pin and st.button("Clear selected pin"):
+        st.session_state.pop("pinned_location", None)
+        st.rerun()
 
 
-first_end_datetime = datetime.combine(
-    date.today(),
-    first_class_end,
-)
+if start_location is None:
+    st.info("Select a starting location before Route2Study creates a plan.")
+    st.stop()
 
-next_start_datetime = datetime.combine(
-    date.today(),
-    next_class_start,
-)
+destination_location = location_lookup[destination_label]
+start_snap_distance = nearest_network_distance(walking_graph, start_location)
 
-available_minutes = int(
-    (
-        next_start_datetime - first_end_datetime
-    ).total_seconds()
-    / 60
-)
-
-
-if available_minutes <= 0:
+if start_snap_distance > MAX_NETWORK_SNAP_METERS:
     st.error(
-        "The next class must start after the first class ends."
+        "This starting point is outside the current Penn-area walking network. "
+        "Choose a point closer to campus."
+    )
+    st.write(
+        f"Distance to the nearest network node: {start_snap_distance:.0f} meters"
     )
     st.stop()
 
-if first_location == next_location:
-    st.warning(
-        "The two classes are in the same building. "
-        "Route2Study will still search for a useful study stop."
+if location_accuracy:
+    st.caption(
+        "Browser-reported location accuracy: "
+        f"approximately {float(location_accuracy):.0f} meters."
     )
 
+available_datetime = datetime.combine(date.today(), available_from)
+class_start_datetime = datetime.combine(date.today(), class_start_time)
+available_minutes = int(
+    (class_start_datetime - available_datetime).total_seconds() / 60
+)
+
+if available_minutes <= 0:
+    st.error("Class must start after the time you become available.")
+    st.stop()
 
 recommendations = recommend_study_spaces(
-    first_location,
-    next_location,
+    walking_graph,
+    start_location,
+    destination_location,
     available_minutes,
     study_preference,
     location_lookup,
     study_location_names,
 )
 
-
 if not recommendations:
-    direct_walking = estimate_walking_minutes(
-        location_lookup[first_location],
-        location_lookup[next_location],
+    direct_route = calculate_network_route(
+        walking_graph, start_location, destination_location
     )
 
-    metric_1, metric_2, metric_3 = st.columns(3)
-    metric_1.metric("Time Between Classes", f"{available_minutes} min")
-    metric_2.metric("Direct Walking", f"{direct_walking} min")
-    metric_3.metric("Study Recommendation", "Not feasible")
+    if direct_route is None:
+        st.error("No connected walking route was found.")
+        st.stop()
 
+    metric_1, metric_2, metric_3 = st.columns(3)
+    metric_1.metric("Time Available", f"{available_minutes} min")
+    metric_2.metric(
+        "Direct Walking", f"{direct_route['walking_minutes']} min"
+    )
+    metric_3.metric("Study Recommendation", "Not feasible")
     st.warning(
         "There is not enough time for a study stop of at least "
         f"{MINIMUM_STUDY_MINUTES} minutes."
     )
 
     direct_map = create_route_map(
-        first_location,
-        next_location,
-        location_lookup,
+        walking_graph,
+        start_location,
+        start_label,
+        destination_location,
+        destination_label,
+        first_route=direct_route,
     )
-
     st_folium(
         direct_map,
         width=1100,
         height=500,
+        key="direct_route_map",
         returned_objects=[],
     )
     st.stop()
 
-
 best = recommendations[0]
+best_study_location = location_lookup[best["name"]]
 
-metric_1, metric_2, metric_3 = st.columns(3)
-metric_1.metric("Time Between Classes", f"{available_minutes} min")
+metric_1, metric_2, metric_3, metric_4 = st.columns(4)
+metric_1.metric("Time Available", f"{available_minutes} min")
 metric_2.metric("Total Walking", f"{best['total_walking']} min")
-metric_3.metric("Available Study Time", f"{best['study_minutes']} min")
+metric_3.metric("Study Time", f"{best['study_minutes']} min")
+metric_4.metric("Route Distance", f"{best['total_distance'] / 1000:.1f} km")
 
-
+safe_study_name = html.escape(best["name"])
 st.markdown(
     f"""
     <div class="recommendation-card">
-        <h3>Recommended study stop: {best['name']}</h3>
-        <p>
-            Preference match: {best['preference_match']} / 5
-        </p>
+        <h3>Recommended study stop: {safe_study_name}</h3>
+        <p>Preference match: {best['preference_match']} / 5</p>
         <p>
             Walk {best['walk_to_study']} minutes to the study space,
             study for approximately {best['study_minutes']} minutes,
@@ -474,84 +643,75 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 st.subheader("Recommended Route")
-
 route_map = create_route_map(
-    first_location,
-    next_location,
-    location_lookup,
-    study_name=best["name"],
+    walking_graph,
+    start_location,
+    start_label,
+    destination_location,
+    destination_label,
+    study_location=best_study_location,
+    study_label=best["name"],
+    first_route=best["route_to_study"],
+    second_route=best["route_to_class"],
 )
-
 st_folium(
     route_map,
     width=1100,
-    height=500,
+    height=520,
+    key="recommended_route_map",
     returned_objects=[],
 )
-
 st.caption(
-    "The dashed segments are prototype route estimates. "
-    "Street-level shortest paths will be added in a later version."
+    "Blue: start to study space. Purple: study space to class. "
+    "Routes minimize distance on the OpenStreetMap pedestrian network."
 )
 
-
 st.subheader("Plan Timeline")
-
 timeline_1, timeline_2, timeline_3 = st.columns(3)
 
 with timeline_1:
-    st.markdown("**1. Leave class**")
-    st.write(first_location)
-    st.write(first_class_end.strftime("%I:%M %p"))
+    st.markdown("**1. Start**")
+    st.write(start_label)
+    st.write(available_from.strftime("%I:%M %p"))
 
 with timeline_2:
-    arrival_time = (
-        first_end_datetime
-        + pd.Timedelta(minutes=best["walk_to_study"])
+    arrival_time = available_datetime + pd.Timedelta(
+        minutes=best["walk_to_study"]
     )
     st.markdown("**2. Study**")
     st.write(best["name"])
-    st.write(
-        f"Arrive around {arrival_time.strftime('%I:%M %p')}"
-    )
+    st.write(f"Arrive around {arrival_time.strftime('%I:%M %p')}")
 
 with timeline_3:
-    st.markdown("**3. Next class**")
-    st.write(next_location)
-    st.write(f"Starts at {next_class_start.strftime('%I:%M %p')}")
-
+    st.markdown("**3. Class**")
+    st.write(destination_label)
+    st.write(f"Starts at {class_start_time.strftime('%I:%M %p')}")
 
 if len(recommendations) > 1:
     st.subheader("Other Feasible Study Spaces")
-
     alternatives = pd.DataFrame(recommendations[1:4])[
         [
             "name",
             "total_walking",
+            "total_distance",
             "study_minutes",
             "preference_match",
         ]
-    ].rename(
+    ].copy()
+    alternatives["total_distance"] = (
+        alternatives["total_distance"] / 1000
+    ).round(1)
+    alternatives = alternatives.rename(
         columns={
             "name": "Study Space",
             "total_walking": "Walking (min)",
+            "total_distance": "Distance (km)",
             "study_minutes": "Study Time (min)",
             "preference_match": "Preference Match",
         }
     )
-
-    st.dataframe(
-        alternatives,
-        use_container_width=True,
-        hide_index=True,
-    )
-
+    st.dataframe(alternatives, width="stretch", hide_index=True)
 
 with st.expander("View Location Data"):
-    st.dataframe(
-        locations_df,
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.dataframe(locations_df, width="stretch", hide_index=True)
