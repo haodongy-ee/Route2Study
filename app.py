@@ -18,7 +18,7 @@ from streamlit_geolocation import streamlit_geolocation
 st.set_page_config(page_title="Route2Study", layout="wide")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_FILE = PROJECT_ROOT / "data" / "locations.csv"
+DATA_FILE = PROJECT_ROOT / "data" / "penn_locations.csv"
 NETWORK_FILE = PROJECT_ROOT / "data" / "penn_walking_network.graphml"
 
 CAMPUS_CENTER = (39.9522, -75.1930)
@@ -31,6 +31,8 @@ REQUIRED_COLUMNS = {
     "name",
     "latitude",
     "longitude",
+    "category",
+    "can_be_start",
     "can_be_class",
     "can_be_study",
     "quiet_score",
@@ -391,12 +393,15 @@ try:
 except (FileNotFoundError, ValueError) as error:
     st.error(str(error))
     st.info(
-        "Confirm that data/locations.csv and "
+        "Confirm that data/penn_locations.csv and "
         "data/penn_walking_network.graphml both exist."
     )
     st.stop()
 
 location_lookup = locations_df.set_index("name").to_dict(orient="index")
+start_location_names = locations_df.loc[
+    locations_df["can_be_start"] == 1, "name"
+].tolist()
 class_location_names = locations_df.loc[
     locations_df["can_be_class"] == 1, "name"
 ].tolist()
@@ -422,7 +427,13 @@ with st.sidebar:
     )
 
     if start_mode == "Campus building":
-        start_label = st.selectbox("Starting building", class_location_names)
+        start_label = st.selectbox(
+            "Starting building or residence",
+            start_location_names,
+            format_func=lambda name: (
+                f"{name} · {location_lookup[name]['category'].title()}"
+            ),
+        )
         start_location = location_lookup[start_label]
 
     elif start_mode == "Street address":
@@ -496,6 +507,7 @@ with st.sidebar:
         "Destination class",
         class_location_names,
         index=min(1, len(class_location_names) - 1),
+        format_func=lambda name: f"{name} · Academic",
     )
     class_start_time = st.time_input("Class starts", value=time(14, 0))
     study_preference = st.selectbox(

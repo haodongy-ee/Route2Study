@@ -1,0 +1,21 @@
+name,address,latitude,longitude,category,can_be_start,can_be_class,can_be_study,quiet_score,collaborative_score,coffee_score,outlet_score,default_service_minutes,coordinate_source,score_status
+Rodin College House,3901 Locust Walk Philadelphia PA,39.9531033,-75.2012567,residence,1,0,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Harnwell College House,3820 Locust Walk Philadelphia PA,39.9523712,-75.2002421,residence,1,0,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Harrison College House,3910 Irving Street Philadelphia PA,39.9519373,-75.2011203,residence,1,0,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Gutmann College House,211 South 40th Street Philadelphia PA,39.9534836,-75.2024733,residence,1,0,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Hill College House,3333 Walnut Street Philadelphia PA,39.9529954,-75.1906212,residence,1,0,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Gregory College House,3909 Spruce Street Philadelphia PA,39.9518937,-75.2024976,residence,1,0,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Stouffer College House,3702 Spruce Street Philadelphia PA,39.9508319,-75.1985569,residence,1,0,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Kings Court English College House,3465 Sansom Street Philadelphia PA,39.9538896,-75.1938464,residence,1,0,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Towne Building,220 South 33rd Street Philadelphia PA,39.9518615,-75.1909348,academic,1,1,1,3,3,2,4,20,OpenStreetMap Nominatim,prototype_unvalidated
+Moore School Building,200 South 33rd Street Philadelphia PA,39.9523978,-75.1904873,academic,1,1,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Levine Hall,3330 Walnut Street Philadelphia PA,39.9521867,-75.1910852,academic,1,1,1,3,4,3,5,20,OpenStreetMap Nominatim,prototype_unvalidated
+David Rittenhouse Laboratory,209 South 33rd Street Philadelphia PA,39.9521742,-75.1900063,academic,1,1,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Huntsman Hall,3730 Walnut Street Philadelphia PA,39.9533863,-75.1974183,academic,1,1,1,2,5,4,4,20,OpenStreetMap Nominatim,prototype_unvalidated
+Meyerson Hall,210 South 34th Street Philadelphia PA,39.9522204,-75.1926627,academic,1,1,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Claudia Cohen Hall,249 South 36th Street Philadelphia PA,39.9513857,-75.1947604,academic,1,1,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Annenberg School of Communication,3620 Walnut Street Philadelphia PA,39.9528518,-75.1957856,academic,1,1,0,0,0,0,0,0,OpenStreetMap Nominatim,not_applicable
+Van Pelt Library,3420 Walnut Street Philadelphia PA,39.9527140,-75.1939328,library,1,0,1,5,3,3,5,25,OpenStreetMap Nominatim,prototype_unvalidated
+Fisher Fine Arts Library,220 South 34th Street Philadelphia PA,39.9515981,-75.1927152,library,1,0,1,5,2,2,4,25,OpenStreetMap Nominatim,prototype_unvalidated
+Holman Biotech Commons,3610 Hamilton Walk Philadelphia PA,39.9498805,-75.1974653,library,1,0,1,4,4,3,5,25,OpenStreetMap Nominatim,prototype_unvalidated
+Houston Hall,3417 Spruce Street Philadelphia PA,39.9509379,-75.1938796,student_center,1,0,1,2,5,5,3,20,OpenStreetMap Nominatim,prototype_unvalidated
