@@ -1,0 +1,3 @@
+# Extra dependencies for reproducible Route2Study experiments.
+# pandas is already used by the Streamlit app, but is listed here explicitly.
+pandas>=2.1,<3.0
