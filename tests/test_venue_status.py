@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from venue_status import (
     CrowdReportStore,
     extract_library_hours,
-    fall_2026_regular_hours,
+    september_2026_regular_hours,
     is_open_at,
 )
 
@@ -35,9 +35,12 @@ class VenueStatusTests(unittest.TestCase):
         self.assertFalse(is_open_at("Closed", datetime(2026, 9, 14, 12, 0)))
 
     def test_fall_schedule_uses_correct_weekday(self) -> None:
-        monday = fall_2026_regular_hours(datetime(2026, 9, 14, 12, 0))
+        monday = september_2026_regular_hours(datetime(2026, 9, 14, 12, 0))
         self.assertEqual(monday["Van Pelt Library"], "8:30am - 12am")
         self.assertEqual(monday["Fisher Fine Arts Library"], "9am - 12am")
+        self.assertEqual(
+            september_2026_regular_hours(datetime(2026, 10, 1, 12, 0)), {}
+        )
 
     def test_crowd_reports_expire_and_aggregate(self) -> None:
         store = CrowdReportStore(retention_hours=2)
