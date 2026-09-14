@@ -8,6 +8,8 @@ From the project root:
 from __future__ import annotations
 
 import argparse
+import random
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -68,6 +70,24 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT,
     )
+    parser.add_argument(
+        "--timing-repeats",
+        type=int,
+        default=5,
+        help="Timed repetitions per solver/scenario; the median is reported.",
+    )
+    parser.add_argument(
+        "--warmup-runs",
+        type=int,
+        default=1,
+        help="Untimed warm-up calls per solver/scenario.",
+    )
+    parser.add_argument(
+        "--order-seed",
+        type=int,
+        default=2026,
+        help="Seed used to rotate solver timing order across scenarios.",
+    )
     return parser.parse_args()
 
 
@@ -88,7 +108,34 @@ def route_names(solution, node_names: dict[int, str]) -> str:
     return " -> ".join(node_names[node] for node in solution.route)
 
 
+def benchmark_solver(solver, instance, warmups: int, repeats: int):
+    """Warm up a solver and return its solution plus robust timing samples."""
+
+    if repeats < 1 or warmups < 0:
+        raise ValueError("timing repeats must be >= 1 and warmups must be >= 0")
+    for _ in range(warmups):
+        solver(instance)
+
+    timings = []
+    solution = None
+    for _ in range(repeats):
+        started = time.perf_counter_ns()
+        solution = solver(instance)
+        timings.append((time.perf_counter_ns() - started) / 1_000_000)
+
+    ordered = sorted(timings)
+    p95_index = min(len(ordered) - 1, round(0.95 * (len(ordered) - 1)))
+    return solution, {
+        "runtime_ms": statistics.median(timings),
+        "runtime_mean_ms": statistics.fmean(timings),
+        "runtime_p95_ms": ordered[p95_index],
+        "runtime_std_ms": statistics.stdev(timings) if len(timings) > 1 else 0.0,
+    }
+
+
 def run(args: argparse.Namespace) -> pd.DataFrame:
+    if args.timing_repeats < 1 or args.warmup_runs < 0:
+        raise ValueError("--timing-repeats must be >= 1 and --warmup-runs >= 0")
     locations = load_locations(LOCATION_FILE)
     travel_matrix = load_or_build_matrix(locations, args.rebuild_matrix)
 
@@ -124,15 +171,23 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
                         time_budget=time_budget,
                     )
 
-                    scenario_solutions = []
-                    for solver in SOLVERS:
-                        started = time.perf_counter()
-                        solution = solver(instance)
-                        runtime_ms = (time.perf_counter() - started) * 1000
-                        scenario_solutions.append((solution, runtime_ms))
+                    solver_order = list(SOLVERS)
+                    random.Random(args.order_seed + scenario_index).shuffle(solver_order)
+                    scenario_solutions = {}
+                    for solver in solver_order:
+                        solution, timing = benchmark_solver(
+                            solver,
+                            instance,
+                            warmups=args.warmup_runs,
+                            repeats=args.timing_repeats,
+                        )
+                        scenario_solutions[solver] = (solution, timing)
 
-                    optimal_reward = scenario_solutions[0][0].reward
-                    for solution, runtime_ms in scenario_solutions:
+                    optimal_reward = scenario_solutions[
+                        solve_exact_dynamic_programming
+                    ][0].reward
+                    for solver in SOLVERS:
+                        solution, timing = scenario_solutions[solver]
                         if optimal_reward > 0:
                             gap = 100 * (
                                 optimal_reward - solution.reward
@@ -156,7 +211,12 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
                                 "total_minutes": solution.total_minutes,
                                 "visited_count": solution.visited_count,
                                 "feasible": solution.feasible,
-                                "runtime_ms": round(runtime_ms, 4),
+                                "runtime_ms": round(timing["runtime_ms"], 4),
+                                "runtime_mean_ms": round(timing["runtime_mean_ms"], 4),
+                                "runtime_p95_ms": round(timing["runtime_p95_ms"], 4),
+                                "runtime_std_ms": round(timing["runtime_std_ms"], 4),
+                                "timing_repeats": args.timing_repeats,
+                                "order_seed": args.order_seed,
                                 "route": route_names(solution, node_names),
                             }
                         )
