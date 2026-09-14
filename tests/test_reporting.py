@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from research.reporting import load_saved_summary, summarize_results
+from research.reporting import (
+    load_saved_summary,
+    summarize_results,
+    summarize_results_with_uncertainty,
+)
 
 
 class ReportingTests(unittest.TestCase):
@@ -80,6 +84,20 @@ class ReportingTests(unittest.TestCase):
             loaded = load_saved_summary(path)
 
         self.assertEqual(loaded.iloc[0]["method"], "Greedy reward/minute")
+
+    def test_rigorous_summary_is_reproducible(self) -> None:
+        first = summarize_results_with_uncertainty(
+            self.results, bootstrap_samples=200, seed=2026
+        )
+        second = summarize_results_with_uncertainty(
+            self.results, bootstrap_samples=200, seed=2026
+        )
+        self.assertTrue(first.equals(second))
+        nearest = first.loc[first["solver"] == "nearest"].iloc[0]
+        self.assertAlmostEqual(nearest["reward_std"], 50 ** 0.5)
+        self.assertEqual(nearest["median_runtime_ms"], 1)
+        self.assertLessEqual(nearest["reward_ci_low"], nearest["mean_reward"])
+        self.assertGreaterEqual(nearest["reward_ci_high"], nearest["mean_reward"])
 
 
 if __name__ == "__main__":
