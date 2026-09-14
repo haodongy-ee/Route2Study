@@ -78,6 +78,17 @@ Then run all residence, classroom, preference, and time-budget combinations:
 python research\run_penn_experiments.py
 ```
 
+For publication-style timing, use repeated measurements and warm-ups:
+
+```powershell
+python research\run_penn_experiments.py --timing-repeats 10 --warmup-runs 2 --order-seed 2026
+```
+
+Each scenario rotates solver order deterministically to reduce cache/order bias.
+The raw CSV records median, mean, standard deviation, and P95 runtime. The app's
+research dashboard reports reward/gap standard deviations and reproducible 95%
+bootstrap confidence intervals (2,000 resamples; seed 2026).
+
 Use `--rebuild-matrix` after changing the graph or location coordinates.
 
 The current preference scores are labeled `prototype_unvalidated`. They are
