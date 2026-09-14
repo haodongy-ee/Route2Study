@@ -7,6 +7,13 @@ starting location and a class, then visualizes the walking route and timeline.
 The project also includes a reproducible research benchmark for a personalized,
 time-budgeted open orienteering formulation.
 
+## Live App
+
+[Open Route2Study](https://route2study.streamlit.app/)
+
+Use the sidebar to switch between the interactive route planner and the
+research benchmark dashboard.
+
 ## Features
 
 - Start from a campus building, street address, map pin, or browser location.
