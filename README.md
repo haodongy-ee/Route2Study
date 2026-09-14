@@ -89,7 +89,8 @@ policies. Penn preference scores are currently prototype engineering values;
 they are not claims about measured student behavior.
 
 Penn Libraries hours come from the official daily hours page and are cached for
-15 minutes. Crowding values are anonymous user reports, expire after two hours,
+15 minutes. A September 2026 schedule is used only as a dated fallback when the
+live page is unavailable. Crowding values are anonymous user reports, expire after two hours,
 and reset when the Streamlit process restarts; `Unknown` means no recent report.
 
 See [research/README.md](research/README.md) for the formulation and roadmap.
