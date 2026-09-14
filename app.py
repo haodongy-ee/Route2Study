@@ -1,7 +1,8 @@
 import html
 import math
-from datetime import date, datetime, time
+from datetime import datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import folium
 import networkx as nx
@@ -14,10 +15,20 @@ from geopy.extra.rate_limiter import RateLimiter
 from streamlit_folium import st_folium
 from streamlit_geolocation import streamlit_geolocation
 
-from research.reporting import load_raw_summary, load_saved_summary
+from research.reporting import (
+    load_raw_rigorous_summary,
+    load_saved_summary,
+)
+from venue_status import (
+    PENN_LIBRARY_HOURS_URL,
+    CrowdReportStore,
+    crowd_penalty,
+    fetch_penn_library_hours,
+    is_open_at,
+)
 
 
-st.set_page_config(page_title="Route2Study", layout="wide")
+st.set_page_config(page_title="Route2Study", page_icon="🗺️", layout="wide")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_FILE = PROJECT_ROOT / "data" / "penn_locations.csv"
@@ -29,6 +40,7 @@ WALKING_SPEED_METERS_PER_MINUTE = 80
 TRANSITION_BUFFER_MINUTES = 10
 MINIMUM_STUDY_MINUTES = 15
 MAX_NETWORK_SNAP_METERS = 500
+PENN_TIMEZONE = ZoneInfo("America/New_York")
 
 REQUIRED_COLUMNS = {
     "name",
@@ -97,7 +109,7 @@ def render_research_benchmark():
 
     try:
         if result_kind == "raw":
-            summary = load_raw_summary(result_path)
+            summary = load_raw_rigorous_summary(result_path)
         else:
             summary = load_saved_summary(result_path)
     except (OSError, ValueError, pd.errors.ParserError) as error:
@@ -172,11 +184,64 @@ def render_research_benchmark():
 
     st.subheader("Summary Table")
     st.dataframe(display, width="stretch", hide_index=True)
+    if {
+        "reward_std",
+        "reward_ci_low",
+        "reward_ci_high",
+        "median_runtime_ms",
+        "p95_runtime_ms",
+    }.issubset(summary.columns):
+        rigorous = summary[
+            [
+                "method",
+                "reward_std",
+                "reward_ci_low",
+                "reward_ci_high",
+                "gap_ci_low",
+                "gap_ci_high",
+                "median_runtime_ms",
+                "p95_runtime_ms",
+            ]
+        ].copy()
+        rigorous.columns = [
+            "Method",
+            "Reward SD",
+            "Reward CI low",
+            "Reward CI high",
+            "Gap CI low",
+            "Gap CI high",
+            "Median runtime (ms)",
+            "P95 runtime (ms)",
+        ]
+        numeric_columns = rigorous.columns[1:]
+        rigorous[numeric_columns] = rigorous[numeric_columns].round(3)
+        st.subheader("Uncertainty and Runtime Distribution")
+        st.dataframe(rigorous, width="stretch", hide_index=True)
+        st.caption(
+            "Intervals are reproducible 95% bootstrap confidence intervals "
+            "(2,000 resamples; seed 2026). Runtime median and P95 are shown "
+            "because very short wall-clock measurements are often skewed."
+        )
     st.info(
         "The Penn preference scores are prototype engineering values, not "
         "survey-validated student ratings. Treat these results as an "
         "algorithm benchmark rather than a user-behavior claim."
     )
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_official_hours():
+    """Load today's Penn Libraries hours with a short-lived cache."""
+
+    try:
+        return fetch_penn_library_hours(), None
+    except (OSError, TimeoutError, ValueError) as error:
+        return {}, str(error)
+
+
+@st.cache_resource
+def get_crowd_store():
+    return CrowdReportStore(retention_hours=2)
 
 
 @st.cache_data
@@ -311,6 +376,9 @@ def recommend_study_spaces(
     preference,
     location_lookup,
     study_location_names,
+    planned_start_datetime,
+    venue_hours,
+    crowd_store,
 ):
     recommendations = []
 
@@ -340,12 +408,22 @@ def recommend_study_spaces(
         if study_minutes < MINIMUM_STUDY_MINUTES:
             continue
 
+        arrival_datetime = planned_start_datetime + pd.Timedelta(
+            minutes=walk_to_study
+        )
+        hours_text = venue_hours.get(study_name)
+        open_status = is_open_at(hours_text, arrival_datetime)
+        crowd = crowd_store.summarize(study_name)
+        if open_status is False or crowd.level == "Full":
+            continue
+
         match_score = preference_score(study_location, preference)
         final_score = (
             study_minutes
             + 15 * match_score
             + 2 * study_location["outlet_score"]
             - 0.5 * total_walking
+            - crowd_penalty(crowd.level)
         )
 
         recommendations.append(
@@ -357,6 +435,11 @@ def recommend_study_spaces(
                 "total_distance": total_distance,
                 "study_minutes": study_minutes,
                 "preference_match": round(match_score, 1),
+                "hours": hours_text or "Not published in the live library feed",
+                "open_status": open_status,
+                "crowd_level": crowd.level,
+                "crowd_reports": crowd.reports,
+                "crowd_updated": crowd.latest_at,
                 "final_score": round(final_score, 1),
                 "route_to_study": route_to_study,
                 "route_to_class": route_to_class,
@@ -507,6 +590,34 @@ st.markdown(
             color: #1E3A8A;
         }
         .recommendation-card p { margin: 4px 0; color: #1F2937; }
+        .status-pill {
+            display: inline-block;
+            padding: 3px 9px;
+            border-radius: 999px;
+            margin: 3px 6px 3px 0;
+            background: rgba(255, 255, 255, 0.75);
+            color: #1E3A8A;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        @media (max-width: 700px) {
+            .block-container {
+                padding: 0.75rem 0.75rem 2rem 0.75rem;
+            }
+            .hero {
+                padding: 20px 18px;
+                border-radius: 16px;
+                margin-bottom: 14px;
+            }
+            .hero h1 { font-size: 32px; }
+            .hero p { font-size: 15px; line-height: 1.45; }
+            .recommendation-card { padding: 16px; }
+            div[data-testid="stMetric"] {
+                border: 1px solid rgba(49, 51, 63, 0.12);
+                border-radius: 12px;
+                padding: 10px;
+            }
+        }
     </style>
     <div class="hero">
         <h1>Route2Study</h1>
@@ -516,11 +627,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.sidebar:
-    app_view = st.radio(
-        "Route2Study view",
-        ["Plan a route", "Research benchmark"],
-    )
+app_view = st.segmented_control(
+    "Route2Study view",
+    ["Plan a route", "Research benchmark"],
+    default="Plan a route",
+    label_visibility="collapsed",
+)
 
 if app_view == "Research benchmark":
     render_research_benchmark()
@@ -554,7 +666,7 @@ start_label = None
 location_accuracy = None
 
 
-with st.sidebar:
+with st.expander("Plan settings", expanded=True):
     st.header("Plan Your Day")
     start_mode = st.selectbox(
         "Starting point method",
@@ -661,6 +773,29 @@ with st.sidebar:
         ],
     )
 
+    st.divider()
+    st.markdown("**Share a live crowd report**")
+    crowd_store = get_crowd_store()
+    with st.form("crowd_report_form", border=False):
+        report_venue = st.selectbox("Study space", study_location_names)
+        report_level = st.segmented_control(
+            "How crowded is it?",
+            list(CrowdReportStore.LEVELS),
+            default="Moderate",
+        )
+        report_submitted = st.form_submit_button(
+            "Submit anonymous report", width="stretch"
+        )
+    if report_submitted and report_level:
+        crowd_store.add(report_venue, report_level)
+        st.success(
+            f"Live report added for {report_venue}. It will expire in 2 hours."
+        )
+    st.caption(
+        "Crowd reports are anonymous, shared with current app users, and "
+        "automatically expire after two hours. They reset if the app restarts."
+    )
+
 
 if start_mode == "Drop a pin":
     st.subheader("Choose Your Starting Point")
@@ -669,10 +804,10 @@ if start_mode == "Drop a pin":
     picker_map = create_pin_picker(existing_pin)
     picker_result = st_folium(
         picker_map,
-        width=1100,
         height=390,
         key="start_location_picker",
         returned_objects=["last_clicked"],
+        use_container_width=True,
     )
     clicked_point = picker_result.get("last_clicked") if picker_result else None
 
@@ -713,8 +848,13 @@ if location_accuracy:
         f"approximately {float(location_accuracy):.0f} meters."
     )
 
-available_datetime = datetime.combine(date.today(), available_from)
-class_start_datetime = datetime.combine(date.today(), class_start_time)
+planning_date = datetime.now(PENN_TIMEZONE).date()
+available_datetime = datetime.combine(
+    planning_date, available_from, tzinfo=PENN_TIMEZONE
+)
+class_start_datetime = datetime.combine(
+    planning_date, class_start_time, tzinfo=PENN_TIMEZONE
+)
 available_minutes = int(
     (class_start_datetime - available_datetime).total_seconds() / 60
 )
@@ -722,6 +862,13 @@ available_minutes = int(
 if available_minutes <= 0:
     st.error("Class must start after the time you become available.")
     st.stop()
+
+official_hours, hours_error = load_official_hours()
+if hours_error:
+    st.caption(
+        "Penn Libraries' live hours could not be refreshed. "
+        "Library status is shown as unknown for this plan."
+    )
 
 recommendations = recommend_study_spaces(
     walking_graph,
@@ -731,6 +878,9 @@ recommendations = recommend_study_spaces(
     study_preference,
     location_lookup,
     study_location_names,
+    available_datetime,
+    official_hours,
+    crowd_store,
 )
 
 if not recommendations:
@@ -763,10 +913,10 @@ if not recommendations:
     )
     st_folium(
         direct_map,
-        width=1100,
         height=500,
         key="direct_route_map",
         returned_objects=[],
+        use_container_width=True,
     )
     st.stop()
 
@@ -780,10 +930,20 @@ metric_3.metric("Study Time", f"{best['study_minutes']} min")
 metric_4.metric("Route Distance", f"{best['total_distance'] / 1000:.1f} km")
 
 safe_study_name = html.escape(best["name"])
+safe_hours = html.escape(best["hours"])
+open_label = "Open at arrival" if best["open_status"] is True else "Hours unverified"
+crowd_label = html.escape(best["crowd_level"])
+crowd_detail = (
+    f"{best['crowd_reports']} report(s) in the last 2 hours"
+    if best["crowd_reports"]
+    else "No recent reports"
+)
 st.markdown(
     f"""
     <div class="recommendation-card">
         <h3>Recommended study stop: {safe_study_name}</h3>
+        <span class="status-pill">{open_label} · {safe_hours}</span>
+        <span class="status-pill">Crowding: {crowd_label} · {crowd_detail}</span>
         <p>Preference match: {best['preference_match']} / 5</p>
         <p>
             Walk {best['walk_to_study']} minutes to the study space,
@@ -809,10 +969,10 @@ route_map = create_route_map(
 )
 st_folium(
     route_map,
-    width=1100,
     height=520,
     key="recommended_route_map",
     returned_objects=[],
+    use_container_width=True,
 )
 st.caption(
     "Blue: start to study space. Purple: study space to class. "
@@ -849,6 +1009,9 @@ if len(recommendations) > 1:
             "total_distance",
             "study_minutes",
             "preference_match",
+            "hours",
+            "crowd_level",
+            "crowd_reports",
         ]
     ].copy()
     alternatives["total_distance"] = (
@@ -861,9 +1024,35 @@ if len(recommendations) > 1:
             "total_distance": "Distance (km)",
             "study_minutes": "Study Time (min)",
             "preference_match": "Preference Match",
+            "hours": "Today's Hours",
+            "crowd_level": "Crowding",
+            "crowd_reports": "Live Reports",
         }
     )
     st.dataframe(alternatives, width="stretch", hide_index=True)
+
+st.subheader("Live Venue Status")
+status_rows = []
+for venue_name in study_location_names:
+    crowd = crowd_store.summarize(venue_name)
+    status_rows.append(
+        {
+            "Study Space": venue_name,
+            "Today's Official Hours": official_hours.get(
+                venue_name, "Not available from Penn Libraries"
+            ),
+            "Crowding": crowd.level,
+            "Reports (last 2h)": crowd.reports,
+            "Last Report": (
+                crowd.latest_at.strftime("%I:%M %p") if crowd.latest_at else "—"
+            ),
+        }
+    )
+st.dataframe(pd.DataFrame(status_rows), width="stretch", hide_index=True)
+st.caption(
+    f"Library hours: [Penn Libraries official Hours page]({PENN_LIBRARY_HOURS_URL}), "
+    "cached for 15 minutes. Academic-building hours are not inferred."
+)
 
 with st.expander("View Location Data"):
     st.dataframe(locations_df, width="stretch", hide_index=True)
