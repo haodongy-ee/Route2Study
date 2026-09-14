@@ -84,3 +84,21 @@ The current preference scores are labeled `prototype_unvalidated`. They are
 engineering placeholders, not measured student opinions. A publishable study
 must replace or validate them using a documented survey, observational data,
 or another defensible source.
+
+## Streamlit benchmark dashboard
+
+Run the main application and select **Research benchmark** in the sidebar:
+
+```powershell
+streamlit run app.py
+```
+
+The dashboard reports mean reward, mean optimality gap, feasibility rate, and
+mean runtime for every solver. It loads results in this order when available:
+
+1. `research/results/penn_baseline_results.csv` (raw Penn experiment rows);
+2. `research/results/penn_quick_summary.csv` (saved 12-scenario Penn pilot);
+3. `research/results/baseline_results.csv` (raw synthetic experiment rows).
+
+Runtime values are local wall-clock measurements and should only be compared
+within the same run and hardware environment.

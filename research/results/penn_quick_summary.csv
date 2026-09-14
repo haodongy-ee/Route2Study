@@ -1,0 +1,4 @@
+solver,scenarios,mean_reward,mean_gap_percent,feasible_rate_percent,mean_runtime_ms
+exact_dynamic_programming,12,14.467,0.000,100.0,0.115
+greedy_reward_per_minute,12,14.467,0.000,100.0,0.016
+nearest,12,10.300,34.129,100.0,0.010

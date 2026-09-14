@@ -1,78 +1,76 @@
 # Route2Study
 
-Route2Study is a campus route and study-space planner that helps students turn the time between classes into productive study time.
+Route2Study is a Penn campus route and study planner built with Streamlit,
+OpenStreetMap, and NetworkX. It recommends a feasible study stop between a
+starting location and a class, then visualizes the walking route and timeline.
 
-## Motivation
-
-Students often have limited time between classes and may not know which nearby study space best fits their schedule and preferences. Route2Study recommends a feasible study location by considering walking time, available study time, and preferences such as quietness, collaboration, coffee access, and power outlets.
+The project also includes a reproducible research benchmark for a personalized,
+time-budgeted open orienteering formulation.
 
 ## Features
 
-- Select the locations and times of two consecutive classes
-- Calculate the available time between classes
-- Recommend a feasible study location
-- Support quiet, collaborative, coffee, and outlet preferences
-- Estimate walking and study time
-- Display the recommended route on an interactive campus map
-- Compare alternative study spaces
-- Load campus-location information from a CSV dataset
+- Start from a campus building, street address, map pin, or browser location.
+- Route on the Penn-area OpenStreetMap pedestrian network.
+- Rank study spaces by available study time and user preference.
+- Compare exact dynamic programming, reward-per-minute greedy, and nearest-stop
+  solvers using reward, optimality gap, feasibility, and runtime.
+- Reproduce synthetic and Penn walking-network experiments from command-line
+  scripts.
 
-## Recommendation Logic
+## Run the app
 
-For each candidate study space, Route2Study estimates:
+From `E:\Route2Study` in the `route2study` Conda environment:
 
-1. Walking time from the first class to the study space
-2. Walking time from the study space to the next class
-3. Remaining study time
-4. Match with the user's preferred study environment
+```powershell
+python -m pip install -r requirements.txt
+streamlit run app.py
+```
 
-Locations that provide fewer than 15 minutes of study time are removed. The remaining locations are ranked using a weighted scoring function:
+The planner expects these local data files:
 
-Score = Study Time + 15 × Preference Match + 2 × Outlet Score − 0.5 × Walking Time
+```text
+data/penn_locations.csv
+data/penn_walking_network.graphml
+```
 
-## Tech Stack
+Use the sidebar to switch between **Plan a route** and **Research benchmark**.
+The benchmark page can run without loading the large walking-network file.
 
-- Python
-- Streamlit
-- pandas
-- Folium
-- OpenStreetMap
-- Git and GitHub
+## Reproduce the experiments
 
-## Getting Started
+Synthetic baseline:
 
-1. Clone the repository:
+```powershell
+python research\run_experiments.py
+```
 
-   git clone https://github.com/haodongy-ee/Route2Study.git
+Penn quick validation:
 
-2. Enter the project directory:
+```powershell
+python research\run_penn_experiments.py --quick
+```
 
-   cd Route2Study
+Full Penn experiment:
 
-3. Install the dependencies:
+```powershell
+python research\run_penn_experiments.py
+```
 
-   python -m pip install -r requirements.txt
+The app automatically prefers `research/results/penn_baseline_results.csv`
+when it exists. A checked-in `penn_quick_summary.csv` records the completed
+12-scenario pilot benchmark.
 
-4. Run the application:
+## Tests
 
-   python -m streamlit run app.py
+```powershell
+python -m unittest discover -s tests -v
+```
 
-## Current Limitations
+## Current research status
 
-- Walking time is estimated from straight-line distance
-- Route lines do not yet follow the real pedestrian network
-- Campus locations and preference scores are manually defined
+The exact solver supplies ground truth for small instances. The heuristic
+baselines establish speed and solution-quality references for later learned
+policies. Penn preference scores are currently prototype engineering values;
+they are not claims about measured student behavior.
 
-## Roadmap
-
-- Implement street-level shortest-path routing with NetworkX
-- Expand and validate the campus-location dataset
-- Add class schedule import
-- Formulate study-space selection as an optimization problem
-- Deploy the application online
-
-## Author
-
-Haodong Yang  
-Master's Student in Electrical Engineering  
-University of Pennsylvania
+See [research/README.md](research/README.md) for the formulation and roadmap.

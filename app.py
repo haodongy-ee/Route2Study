@@ -14,12 +14,15 @@ from geopy.extra.rate_limiter import RateLimiter
 from streamlit_folium import st_folium
 from streamlit_geolocation import streamlit_geolocation
 
+from research.reporting import load_raw_summary, load_saved_summary
+
 
 st.set_page_config(page_title="Route2Study", layout="wide")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_FILE = PROJECT_ROOT / "data" / "penn_locations.csv"
 NETWORK_FILE = PROJECT_ROOT / "data" / "penn_walking_network.graphml"
+RESULTS_DIR = PROJECT_ROOT / "research" / "results"
 
 CAMPUS_CENTER = (39.9522, -75.1930)
 WALKING_SPEED_METERS_PER_MINUTE = 80
@@ -47,6 +50,133 @@ PREFERENCE_COLUMNS = {
     "Coffee nearby": "coffee_score",
     "Power outlets": "outlet_score",
 }
+
+
+def render_research_benchmark():
+    """Render reproducible solver comparisons from saved experiment results."""
+
+    st.header("Research Benchmark")
+    st.write(
+        "Compare the exact reference solver with two fast heuristics on "
+        "time-budgeted campus study-planning problems."
+    )
+
+    benchmark_options = {}
+    penn_raw = RESULTS_DIR / "penn_baseline_results.csv"
+    penn_summary = RESULTS_DIR / "penn_quick_summary.csv"
+    synthetic_raw = RESULTS_DIR / "baseline_results.csv"
+
+    if penn_raw.exists():
+        benchmark_options["Penn walking network · raw experiment"] = (
+            "raw",
+            penn_raw,
+        )
+    if penn_summary.exists():
+        benchmark_options["Penn walking network · 12-scenario quick run"] = (
+            "summary",
+            penn_summary,
+        )
+    if synthetic_raw.exists():
+        benchmark_options["Synthetic benchmark · 30 scenarios per solver"] = (
+            "raw",
+            synthetic_raw,
+        )
+
+    if not benchmark_options:
+        st.warning(
+            "No benchmark CSV was found. Run "
+            "`python research/run_penn_experiments.py --quick` first."
+        )
+        return
+
+    selected_name = st.selectbox(
+        "Experiment dataset",
+        list(benchmark_options),
+    )
+    result_kind, result_path = benchmark_options[selected_name]
+
+    try:
+        if result_kind == "raw":
+            summary = load_raw_summary(result_path)
+        else:
+            summary = load_saved_summary(result_path)
+    except (OSError, ValueError, pd.errors.ParserError) as error:
+        st.error(f"Could not load experiment results: {error}")
+        return
+
+    exact_rows = summary.loc[
+        summary["solver"] == "exact_dynamic_programming"
+    ]
+    heuristic_rows = summary.loc[
+        summary["solver"] != "exact_dynamic_programming"
+    ]
+    fastest = summary.loc[summary["mean_runtime_ms"].idxmin()]
+    best_heuristic = (
+        heuristic_rows.sort_values(
+            ["mean_gap_percent", "mean_runtime_ms"]
+        ).iloc[0]
+        if not heuristic_rows.empty
+        else summary.iloc[0]
+    )
+
+    metric_1, metric_2, metric_3, metric_4 = st.columns(4)
+    metric_1.metric("Methods", len(summary))
+    metric_2.metric("Scenarios / method", int(summary["scenarios"].max()))
+    metric_3.metric("Best heuristic gap", f"{best_heuristic['mean_gap_percent']:.2f}%")
+    metric_4.metric("Fastest method", fastest["method"])
+
+    if not exact_rows.empty:
+        exact_reward = exact_rows.iloc[0]["mean_reward"]
+        st.caption(
+            f"Exact-reference mean reward: {exact_reward:.3f}. "
+            "Runtime is local wall-clock time and is hardware-dependent."
+        )
+
+    chart_left, chart_right = st.columns(2)
+    chart_data = summary.set_index("method")
+    with chart_left:
+        st.subheader("Mean Reward")
+        st.bar_chart(chart_data[["mean_reward"]])
+    with chart_right:
+        st.subheader("Mean Optimality Gap (%)")
+        st.bar_chart(chart_data[["mean_gap_percent"]])
+
+    chart_left, chart_right = st.columns(2)
+    with chart_left:
+        st.subheader("Feasibility Rate (%)")
+        st.bar_chart(chart_data[["feasible_rate_percent"]])
+    with chart_right:
+        st.subheader("Mean Runtime (ms)")
+        st.bar_chart(chart_data[["mean_runtime_ms"]])
+
+    display = summary[
+        [
+            "method",
+            "scenarios",
+            "mean_reward",
+            "mean_gap_percent",
+            "feasible_rate_percent",
+            "mean_runtime_ms",
+        ]
+    ].copy()
+    display.columns = [
+        "Method",
+        "Scenarios",
+        "Mean reward",
+        "Gap (%)",
+        "Feasible (%)",
+        "Runtime (ms)",
+    ]
+    for column in ("Mean reward", "Gap (%)", "Feasible (%)", "Runtime (ms)"):
+        display[column] = display[column].round(3)
+
+    st.subheader("Summary Table")
+    st.dataframe(display, width="stretch", hide_index=True)
+    st.info(
+        "The Penn preference scores are prototype engineering values, not "
+        "survey-validated student ratings. Treat these results as an "
+        "algorithm benchmark rather than a user-behavior claim."
+    )
 
 
 @st.cache_data
@@ -385,6 +515,16 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+with st.sidebar:
+    app_view = st.radio(
+        "Route2Study view",
+        ["Plan a route", "Research benchmark"],
+    )
+
+if app_view == "Research benchmark":
+    render_research_benchmark()
+    st.stop()
 
 
 try:

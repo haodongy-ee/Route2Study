@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import networkx as nx
-import osmnx as ox
 import pandas as pd
 
 from research.orienteering import OrienteeringInstance
@@ -50,6 +48,8 @@ def load_locations(path: Path) -> pd.DataFrame:
 
 
 def load_graph(path: Path):
+    import osmnx as ox
+
     if not path.exists():
         raise FileNotFoundError(f"Penn walking graph not found: {path}")
     return ox.io.load_graphml(filepath=path)
@@ -62,6 +62,9 @@ def build_location_travel_matrix(
     max_snap_distance: float = MAX_NETWORK_SNAP_METERS,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return all-pairs walking minutes and a coordinate-to-network audit table."""
+
+    import networkx as nx
+    import osmnx as ox
 
     if walking_speed <= 0:
         raise ValueError("walking_speed must be positive")
