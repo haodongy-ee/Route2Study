@@ -17,7 +17,7 @@ VENUE_TO_OFFICIAL_NAME = {
     "Fisher Fine Arts Library": "Fisher Fine Arts Library",
     "Holman Biotech Commons": "Holman Biotech Commons",
 }
-FALL_2026_REGULAR_HOURS = {
+SEPTEMBER_2026_REGULAR_HOURS = {
     "Van Pelt Library": (
         "10am - 12am",
         "8:30am - 12am",
@@ -102,18 +102,20 @@ def fetch_penn_library_hours(timeout_seconds: int = 8) -> dict[str, str]:
     return extract_library_hours(page_html)
 
 
-def fall_2026_regular_hours(moment: datetime) -> dict[str, str]:
-    """Official regular fall schedule fallback, verified September 14, 2026.
+def september_2026_regular_hours(moment: datetime) -> dict[str, str]:
+    """Official September schedule fallback, verified September 14, 2026.
 
     Holiday and special-event exceptions require the live Penn feed, so the UI
     identifies this as a fallback whenever the official page cannot be reached.
     """
 
+    if moment.year != 2026 or moment.month != 9:
+        return {}
     # datetime.weekday(): Monday=0; schedules above start with Sunday.
     schedule_index = (moment.weekday() + 1) % 7
     return {
         venue: weekly_hours[schedule_index]
-        for venue, weekly_hours in FALL_2026_REGULAR_HOURS.items()
+        for venue, weekly_hours in SEPTEMBER_2026_REGULAR_HOURS.items()
     }
 
 
