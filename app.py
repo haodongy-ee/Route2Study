@@ -23,6 +23,7 @@ from venue_status import (
     PENN_LIBRARY_HOURS_URL,
     CrowdReportStore,
     crowd_penalty,
+    fall_2026_regular_hours,
     fetch_penn_library_hours,
     is_open_at,
 )
@@ -230,13 +231,16 @@ def render_research_benchmark():
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_official_hours():
+def load_official_hours(planning_moment):
     """Load today's Penn Libraries hours with a short-lived cache."""
 
     try:
-        return fetch_penn_library_hours(), None
+        hours = fetch_penn_library_hours()
+        if not hours:
+            raise ValueError("Penn hours page returned no supported locations")
+        return hours, "live", None
     except (OSError, TimeoutError, ValueError) as error:
-        return {}, str(error)
+        return fall_2026_regular_hours(planning_moment), "fall_schedule", str(error)
 
 
 @st.cache_resource
@@ -863,11 +867,12 @@ if available_minutes <= 0:
     st.error("Class must start after the time you become available.")
     st.stop()
 
-official_hours, hours_error = load_official_hours()
-if hours_error:
+official_hours, hours_source, hours_error = load_official_hours(available_datetime)
+if hours_source == "fall_schedule":
     st.caption(
-        "Penn Libraries' live hours could not be refreshed. "
-        "Library status is shown as unknown for this plan."
+        "Live Penn hours could not be refreshed, so this plan uses the official "
+        "Fall 2026 regular schedule verified September 14. Check the source for "
+        "holiday or event exceptions."
     )
 
 recommendations = recommend_study_spaces(
@@ -1051,7 +1056,8 @@ for venue_name in study_location_names:
 st.dataframe(pd.DataFrame(status_rows), width="stretch", hide_index=True)
 st.caption(
     f"Library hours: [Penn Libraries official Hours page]({PENN_LIBRARY_HOURS_URL}), "
-    "cached for 15 minutes. Academic-building hours are not inferred."
+    "cached for 15 minutes. When live refresh is unavailable, the verified Fall "
+    "2026 regular schedule is used; academic-building hours are not inferred."
 )
 
 with st.expander("View Location Data"):
