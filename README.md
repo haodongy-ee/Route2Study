@@ -11,7 +11,7 @@ time-budgeted open orienteering formulation.
 
 [Open Route2Study](https://route2study.streamlit.app/)
 
-Use the sidebar to switch between the interactive route planner and the
+Use the top navigation to switch between the interactive route planner and the
 research benchmark dashboard.
 
 ## Features
