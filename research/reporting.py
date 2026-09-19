@@ -73,7 +73,7 @@ def summarize_results(results: pd.DataFrame) -> pd.DataFrame:
     """Aggregate one raw experiment row per solver and scenario."""
 
     _validate_columns(results, REQUIRED_RESULT_COLUMNS)
-    clean = results.copy()
+    clean = add_operational_metrics(results)
     for column in ("reward", "optimality_gap_percent", "runtime_ms"):
         clean[column] = pd.to_numeric(clean[column], errors="raise")
     clean["feasible_numeric"] = _coerce_feasible(clean["feasible"])
@@ -85,12 +85,16 @@ def summarize_results(results: pd.DataFrame) -> pd.DataFrame:
             mean_reward=("reward", "mean"),
             mean_gap_percent=("optimality_gap_percent", "mean"),
             feasible_rate_percent=("feasible_numeric", "mean"),
+            study_plan_rate_percent=("study_plan_numeric", "mean"),
+            mean_deadline_slack_minutes=("deadline_slack_minutes", "mean"),
+            mean_walking_detour_minutes=("walking_detour_minutes", "mean"),
             mean_runtime_ms=("runtime_ms", "mean"),
         )
         .sort_values(["mean_gap_percent", "mean_runtime_ms"])
         .reset_index(drop=True)
     )
     summary["feasible_rate_percent"] *= 100
+    summary["study_plan_rate_percent"] *= 100
     summary.insert(1, "method", summary["solver"].map(solver_label))
     return summary
 
@@ -106,13 +110,63 @@ def _bootstrap_mean_interval(
     rng: np.random.Generator,
     samples: int,
 ) -> tuple[float, float]:
-    numeric = pd.to_numeric(values, errors="raise").to_numpy(dtype=float)
+    numeric = (
+        pd.to_numeric(values, errors="raise")
+        .dropna()
+        .to_numpy(dtype=float)
+    )
+    if len(numeric) == 0:
+        return float("nan"), float("nan")
     if len(numeric) == 1:
         return float(numeric[0]), float(numeric[0])
     draws = rng.choice(numeric, size=(samples, len(numeric)), replace=True)
     means = draws.mean(axis=1)
     low, high = np.percentile(means, [2.5, 97.5])
     return float(low), float(high)
+
+
+def add_operational_metrics(results: pd.DataFrame) -> pd.DataFrame:
+    """Derive outcome metrics while supporting older experiment CSV files."""
+
+    clean = results.copy()
+    clean["feasible_numeric"] = _coerce_feasible(clean["feasible"])
+
+    if "study_plan" in clean.columns:
+        clean["study_plan_numeric"] = _coerce_feasible(clean["study_plan"])
+    elif "visited_count" in clean.columns:
+        clean["study_plan_numeric"] = (
+            pd.to_numeric(clean["visited_count"], errors="raise") > 0
+        ).astype(float)
+    else:
+        clean["study_plan_numeric"] = float("nan")
+
+    if "deadline_slack_minutes" not in clean.columns:
+        if {"time_budget", "total_minutes"}.issubset(clean.columns):
+            clean["deadline_slack_minutes"] = (
+                pd.to_numeric(clean["time_budget"], errors="raise")
+                - pd.to_numeric(clean["total_minutes"], errors="raise")
+            )
+        else:
+            clean["deadline_slack_minutes"] = float("nan")
+    else:
+        clean["deadline_slack_minutes"] = pd.to_numeric(
+            clean["deadline_slack_minutes"], errors="raise"
+        )
+
+    if "walking_detour_minutes" not in clean.columns:
+        if {"travel_minutes", "direct_travel_minutes"}.issubset(clean.columns):
+            clean["walking_detour_minutes"] = (
+                pd.to_numeric(clean["travel_minutes"], errors="raise")
+                - pd.to_numeric(clean["direct_travel_minutes"], errors="raise")
+            ).clip(lower=0)
+        else:
+            clean["walking_detour_minutes"] = float("nan")
+    else:
+        clean["walking_detour_minutes"] = pd.to_numeric(
+            clean["walking_detour_minutes"], errors="raise"
+        )
+
+    return clean
 
 
 def summarize_results_with_uncertainty(
@@ -126,10 +180,9 @@ def summarize_results_with_uncertainty(
     if bootstrap_samples < 100:
         raise ValueError("bootstrap_samples must be at least 100")
 
-    clean = results.copy()
+    clean = add_operational_metrics(results)
     for column in ("reward", "optimality_gap_percent", "runtime_ms"):
         clean[column] = pd.to_numeric(clean[column], errors="raise")
-    clean["feasible_numeric"] = _coerce_feasible(clean["feasible"])
 
     records = []
     for solver, group in clean.groupby("solver", sort=False):
@@ -140,6 +193,15 @@ def summarize_results_with_uncertainty(
         )
         gap_low, gap_high = _bootstrap_mean_interval(
             group["optimality_gap_percent"], rng, bootstrap_samples
+        )
+        plan_low, plan_high = _bootstrap_mean_interval(
+            group["study_plan_numeric"], rng, bootstrap_samples
+        )
+        slack_low, slack_high = _bootstrap_mean_interval(
+            group["deadline_slack_minutes"], rng, bootstrap_samples
+        )
+        detour_low, detour_high = _bootstrap_mean_interval(
+            group["walking_detour_minutes"], rng, bootstrap_samples
         )
         records.append(
             {
@@ -155,6 +217,19 @@ def summarize_results_with_uncertainty(
                 "gap_ci_low": gap_low,
                 "gap_ci_high": gap_high,
                 "feasible_rate_percent": 100 * group["feasible_numeric"].mean(),
+                "study_plan_rate_percent": 100 * group["study_plan_numeric"].mean(),
+                "study_plan_ci_low": 100 * plan_low,
+                "study_plan_ci_high": 100 * plan_high,
+                "mean_deadline_slack_minutes": group[
+                    "deadline_slack_minutes"
+                ].mean(),
+                "slack_ci_low": slack_low,
+                "slack_ci_high": slack_high,
+                "mean_walking_detour_minutes": group[
+                    "walking_detour_minutes"
+                ].mean(),
+                "detour_ci_low": detour_low,
+                "detour_ci_high": detour_high,
                 "mean_runtime_ms": group["runtime_ms"].mean(),
                 "median_runtime_ms": group["runtime_ms"].median(),
                 "p95_runtime_ms": group["runtime_ms"].quantile(0.95),
