@@ -23,8 +23,9 @@ research benchmark dashboard.
 - Use anonymous crowd reports from the last two hours to avoid busy spaces.
 - Use a responsive planner, map, metrics, and navigation on mobile screens.
 - Compare exact dynamic programming, reward-per-minute greedy, and nearest-stop
-  solvers using reward, optimality gap, feasibility, runtime distributions, and
-  reproducible 95% bootstrap confidence intervals.
+  solvers using reward, optimality gap, feasibility, study-plan rate, deadline
+  slack, walking detour, runtime distributions, and reproducible 95% bootstrap
+  confidence intervals.
 - Reproduce synthetic and Penn walking-network experiments from command-line
   scripts.
 
@@ -44,7 +45,7 @@ data/penn_locations.csv
 data/penn_walking_network.graphml
 ```
 
-Use the sidebar to switch between **Plan a route** and **Research benchmark**.
+Use the top navigation to switch between **Plan a route** and **Research benchmark**.
 The benchmark page can run without loading the large walking-network file.
 
 ## Reproduce the experiments
@@ -70,6 +71,9 @@ python research\run_penn_experiments.py --timing-repeats 10 --warmup-runs 2
 The benchmark rotates solver timing order with a fixed seed, performs untimed
 warm-ups, and records median, mean, standard deviation, and P95 runtime. The app
 adds 95% bootstrap confidence intervals using 2,000 resamples and seed 2026.
+Route outcomes distinguish simply reaching class from actually scheduling a
+study stop. Walking-network preprocessing is saved separately in
+`penn_baseline_results.metadata.json` and is not mixed into solver runtime.
 
 The app automatically prefers `research/results/penn_baseline_results.csv`
 when it exists. A checked-in `penn_quick_summary.csv` records the completed
