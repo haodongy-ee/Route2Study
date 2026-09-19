@@ -47,6 +47,11 @@ class ReportingTests(unittest.TestCase):
                 },
             ]
         )
+        self.results["visited_count"] = [1, 1, 0, 1]
+        self.results["time_budget"] = [20, 30, 20, 30]
+        self.results["total_minutes"] = [18, 25, 15, 28]
+        self.results["travel_minutes"] = [10, 12, 9, 13]
+        self.results["direct_travel_minutes"] = [8, 10, 9, 10]
 
     def test_summarize_results(self) -> None:
         summary = summarize_results(self.results)
@@ -60,6 +65,9 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(exact["mean_reward"], 15)
         self.assertEqual(nearest["mean_gap_percent"], 15)
         self.assertEqual(nearest["feasible_rate_percent"], 50)
+        self.assertEqual(nearest["study_plan_rate_percent"], 50)
+        self.assertEqual(nearest["mean_deadline_slack_minutes"], 3.5)
+        self.assertEqual(nearest["mean_walking_detour_minutes"], 1.5)
 
     def test_missing_column_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "runtime_ms"):
@@ -98,6 +106,15 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(nearest["median_runtime_ms"], 1)
         self.assertLessEqual(nearest["reward_ci_low"], nearest["mean_reward"])
         self.assertGreaterEqual(nearest["reward_ci_high"], nearest["mean_reward"])
+        self.assertEqual(nearest["study_plan_rate_percent"], 50)
+        self.assertEqual(nearest["mean_deadline_slack_minutes"], 3.5)
+
+    def test_older_results_leave_detour_unknown(self) -> None:
+        old = self.results.drop(columns="direct_travel_minutes")
+        summary = summarize_results_with_uncertainty(
+            old, bootstrap_samples=200
+        )
+        self.assertTrue(summary["mean_walking_detour_minutes"].isna().all())
 
 
 if __name__ == "__main__":
