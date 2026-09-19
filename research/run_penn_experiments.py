@@ -8,10 +8,12 @@ From the project root:
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import statistics
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -94,14 +96,18 @@ def parse_arguments() -> argparse.Namespace:
 def load_or_build_matrix(
     locations: pd.DataFrame,
     rebuild: bool,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, str, float]:
+    started = time.perf_counter_ns()
     if MATRIX_FILE.exists() and not rebuild:
-        return pd.read_csv(MATRIX_FILE, index_col="location")
+        matrix = pd.read_csv(MATRIX_FILE, index_col="location")
+        elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
+        return matrix, "cached_csv", elapsed_ms
 
     graph = load_graph(GRAPH_FILE)
     matrix, audit = build_location_travel_matrix(graph, locations)
     save_matrix_and_audit(matrix, audit, MATRIX_FILE, AUDIT_FILE)
-    return matrix
+    elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
+    return matrix, "rebuilt_from_graph", elapsed_ms
 
 
 def route_names(solution, node_names: dict[int, str]) -> str:
@@ -133,11 +139,41 @@ def benchmark_solver(solver, instance, warmups: int, repeats: int):
     }
 
 
+def operational_metrics(solution, time_budget: float, direct_travel_minutes: float):
+    """Measure whether a useful study plan was made and its routing cost."""
+
+    study_plan = solution.visited_count > 0 and solution.service_minutes > 0
+    deadline_slack = time_budget - solution.total_minutes
+    walking_detour = max(
+        0.0,
+        solution.travel_minutes - direct_travel_minutes,
+    )
+    detour_percent = (
+        100 * walking_detour / direct_travel_minutes
+        if direct_travel_minutes > 0
+        else 0.0
+    )
+    return {
+        "study_plan": study_plan,
+        "deadline_slack_minutes": round(deadline_slack, 4),
+        "direct_travel_minutes": round(direct_travel_minutes, 4),
+        "walking_detour_minutes": round(walking_detour, 4),
+        "walking_detour_percent": round(detour_percent, 4),
+    }
+
+
 def run(args: argparse.Namespace) -> pd.DataFrame:
     if args.timing_repeats < 1 or args.warmup_runs < 0:
         raise ValueError("--timing-repeats must be >= 1 and --warmup-runs >= 0")
+    preprocessing_started = time.perf_counter_ns()
     locations = load_locations(LOCATION_FILE)
-    travel_matrix = load_or_build_matrix(locations, args.rebuild_matrix)
+    locations_loaded_ms = (
+        time.perf_counter_ns() - preprocessing_started
+    ) / 1_000_000
+    travel_matrix, matrix_source, matrix_setup_ms = load_or_build_matrix(
+        locations, args.rebuild_matrix
+    )
+    preprocessing_ms = locations_loaded_ms + matrix_setup_ms
 
     residences = locations.loc[
         locations["category"] == "residence", "name"
@@ -170,6 +206,9 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
                         preference=preference,
                         time_budget=time_budget,
                     )
+                    direct_travel_minutes = float(
+                        travel_matrix.loc[start_name, destination_name]
+                    )
 
                     solver_order = list(SOLVERS)
                     random.Random(args.order_seed + scenario_index).shuffle(solver_order)
@@ -195,6 +234,12 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
                         else:
                             gap = 0.0
 
+                        outcome = operational_metrics(
+                            solution,
+                            time_budget,
+                            direct_travel_minutes,
+                        )
+
                         records.append(
                             {
                                 "scenario_index": scenario_index,
@@ -211,6 +256,7 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
                                 "total_minutes": solution.total_minutes,
                                 "visited_count": solution.visited_count,
                                 "feasible": solution.feasible,
+                                **outcome,
                                 "runtime_ms": round(timing["runtime_ms"], 4),
                                 "runtime_mean_ms": round(timing["runtime_mean_ms"], 4),
                                 "runtime_p95_ms": round(timing["runtime_p95_ms"], 4),
@@ -221,7 +267,19 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
                             }
                         )
 
-    return pd.DataFrame.from_records(records)
+    results = pd.DataFrame.from_records(records)
+    results.attrs.update(
+        {
+            "preprocessing_ms": preprocessing_ms,
+            "locations_load_ms": locations_loaded_ms,
+            "matrix_setup_ms": matrix_setup_ms,
+            "matrix_source": matrix_source,
+            "timing_repeats": args.timing_repeats,
+            "warmup_runs": args.warmup_runs,
+            "order_seed": args.order_seed,
+        }
+    )
+    return results
 
 
 def print_summary(results: pd.DataFrame) -> None:
@@ -232,11 +290,15 @@ def print_summary(results: pd.DataFrame) -> None:
             mean_reward=("reward", "mean"),
             mean_gap_percent=("optimality_gap_percent", "mean"),
             feasible_rate=("feasible", "mean"),
+            study_plan_rate=("study_plan", "mean"),
+            mean_deadline_slack_minutes=("deadline_slack_minutes", "mean"),
+            mean_walking_detour_minutes=("walking_detour_minutes", "mean"),
             mean_runtime_ms=("runtime_ms", "mean"),
         )
         .sort_values("mean_gap_percent")
     )
     summary["feasible_rate"] *= 100
+    summary["study_plan_rate"] *= 100
     print("\nPenn walking-network experiment summary\n")
     print(summary.to_string(index=False, float_format=lambda value: f"{value:.3f}"))
 
@@ -246,10 +308,22 @@ def main() -> None:
     results = run(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     results.to_csv(args.output, index=False)
+    metadata_path = args.output.with_suffix(".metadata.json")
+    metadata = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "rows": len(results),
+        "scenarios_per_solver": int(results["scenario_index"].nunique()),
+        **results.attrs,
+    }
+    metadata_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     print_summary(results)
     print(f"\nSaved {len(results)} rows to {args.output}")
     print(f"Travel matrix: {MATRIX_FILE}")
     print(f"Location audit: {AUDIT_FILE}")
+    print(f"Experiment metadata: {metadata_path}")
 
 
 if __name__ == "__main__":
