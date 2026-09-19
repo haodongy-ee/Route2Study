@@ -1,4 +1,5 @@
 import html
+import json
 import math
 from datetime import datetime, time
 from pathlib import Path
@@ -107,10 +108,14 @@ def render_research_benchmark():
         list(benchmark_options),
     )
     result_kind, result_path = benchmark_options[selected_name]
+    metadata = None
 
     try:
         if result_kind == "raw":
             summary = load_raw_rigorous_summary(result_path)
+            metadata_path = result_path.with_suffix(".metadata.json")
+            if metadata_path.exists():
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         else:
             summary = load_saved_summary(result_path)
     except (OSError, ValueError, pd.errors.ParserError) as error:
@@ -145,6 +150,28 @@ def render_research_benchmark():
             "Runtime is local wall-clock time and is hardware-dependent."
         )
 
+    operational_available = {
+        "study_plan_rate_percent",
+        "mean_deadline_slack_minutes",
+        "mean_walking_detour_minutes",
+    }.issubset(summary.columns)
+    if operational_available:
+        exact = exact_rows.iloc[0] if not exact_rows.empty else summary.iloc[0]
+        outcome_1, outcome_2, outcome_3 = st.columns(3)
+        outcome_1.metric(
+            "Exact study-plan rate",
+            f"{exact['study_plan_rate_percent']:.1f}%",
+        )
+        outcome_2.metric(
+            "Exact mean slack",
+            f"{exact['mean_deadline_slack_minutes']:.1f} min",
+        )
+        detour_value = exact["mean_walking_detour_minutes"]
+        outcome_3.metric(
+            "Exact mean detour",
+            f"{detour_value:.1f} min" if pd.notna(detour_value) else "Pending rerun",
+        )
+
     chart_left, chart_right = st.columns(2)
     chart_data = summary.set_index("method")
     with chart_left:
@@ -159,28 +186,61 @@ def render_research_benchmark():
         st.subheader("Feasibility Rate (%)")
         st.bar_chart(chart_data[["feasible_rate_percent"]])
     with chart_right:
-        st.subheader("Mean Runtime (ms)")
+        if operational_available:
+            st.subheader("Study-plan Rate (%)")
+            st.bar_chart(chart_data[["study_plan_rate_percent"]])
+        else:
+            st.subheader("Mean Runtime (ms)")
+            st.bar_chart(chart_data[["mean_runtime_ms"]])
+
+    if operational_available:
+        chart_left, chart_right = st.columns(2)
+        with chart_left:
+            st.subheader("Mean Deadline Slack (min)")
+            st.bar_chart(chart_data[["mean_deadline_slack_minutes"]])
+        with chart_right:
+            st.subheader("Mean Walking Detour (min)")
+            if summary["mean_walking_detour_minutes"].notna().any():
+                st.bar_chart(chart_data[["mean_walking_detour_minutes"]])
+            else:
+                st.info(
+                    "Walking detour needs `direct_travel_minutes`. Run the "
+                    "updated Penn benchmark to populate it."
+                )
+
+        st.subheader("Mean Solver Runtime (ms)")
         st.bar_chart(chart_data[["mean_runtime_ms"]])
 
-    display = summary[
-        [
-            "method",
-            "scenarios",
-            "mean_reward",
-            "mean_gap_percent",
-            "feasible_rate_percent",
-            "mean_runtime_ms",
-        ]
-    ].copy()
-    display.columns = [
+    display_columns = [
+        "method",
+        "scenarios",
+        "mean_reward",
+        "mean_gap_percent",
+        "feasible_rate_percent",
+    ]
+    display_names = [
         "Method",
         "Scenarios",
         "Mean reward",
         "Gap (%)",
         "Feasible (%)",
-        "Runtime (ms)",
     ]
-    for column in ("Mean reward", "Gap (%)", "Feasible (%)", "Runtime (ms)"):
+    if operational_available:
+        display_columns.extend(
+            [
+                "study_plan_rate_percent",
+                "mean_deadline_slack_minutes",
+                "mean_walking_detour_minutes",
+            ]
+        )
+        display_names.extend(
+            ["Study plan (%)", "Slack (min)", "Detour (min)"]
+        )
+    display_columns.append("mean_runtime_ms")
+    display_names.append("Runtime (ms)")
+    display = summary[display_columns].copy()
+    display.columns = display_names
+    for column in display.columns[2:]:
         display[column] = display[column].round(3)
 
     st.subheader("Summary Table")
@@ -200,6 +260,10 @@ def render_research_benchmark():
                 "reward_ci_high",
                 "gap_ci_low",
                 "gap_ci_high",
+                "study_plan_ci_low",
+                "study_plan_ci_high",
+                "slack_ci_low",
+                "slack_ci_high",
                 "median_runtime_ms",
                 "p95_runtime_ms",
             ]
@@ -211,6 +275,10 @@ def render_research_benchmark():
             "Reward CI high",
             "Gap CI low",
             "Gap CI high",
+            "Study-plan CI low",
+            "Study-plan CI high",
+            "Slack CI low",
+            "Slack CI high",
             "Median runtime (ms)",
             "P95 runtime (ms)",
         ]
@@ -223,7 +291,25 @@ def render_research_benchmark():
             "(2,000 resamples; seed 2026). Runtime median and P95 are shown "
             "because very short wall-clock measurements are often skewed."
         )
+    if metadata:
+        st.subheader("Experiment Protocol")
+        protocol_1, protocol_2, protocol_3, protocol_4 = st.columns(4)
+        protocol_1.metric("Warm-up runs", metadata.get("warmup_runs", "—"))
+        protocol_2.metric(
+            "Timing repeats", metadata.get("timing_repeats", "—")
+        )
+        protocol_3.metric(
+            "Preprocessing",
+            f"{metadata.get('preprocessing_ms', 0):.1f} ms",
+        )
+        protocol_4.metric("Order seed", metadata.get("order_seed", "—"))
+        st.caption(
+            "Preprocessing is reported separately and is not included in solver runtime. "
+            f"Travel matrix source: {metadata.get('matrix_source', 'unknown')}."
+        )
     st.info(
+        "Feasible means the route reaches class within budget; study-plan rate "
+        "separately measures whether at least one study stop was scheduled. "
         "The Penn preference scores are prototype engineering values, not "
         "survey-validated student ratings. Treat these results as an "
         "algorithm benchmark rather than a user-behavior claim."
