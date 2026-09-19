@@ -42,6 +42,9 @@ python research\run_experiments.py --nodes 5 7 --instances 3
 - reward: personalized utility collected by a route;
 - optimality gap: reward lost relative to the exact solution;
 - feasibility rate: fraction of routes that meet the time budget;
+- study-plan rate: fraction that visit at least one study location;
+- deadline slack: unused minutes remaining after reaching class;
+- walking detour: extra walking time relative to going directly to class;
 - runtime: computation time in milliseconds;
 - walking/service time and number of visited candidates.
 
@@ -85,9 +88,10 @@ python research\run_penn_experiments.py --timing-repeats 10 --warmup-runs 2 --or
 ```
 
 Each scenario rotates solver order deterministically to reduce cache/order bias.
-The raw CSV records median, mean, standard deviation, and P95 runtime. The app's
-research dashboard reports reward/gap standard deviations and reproducible 95%
-bootstrap confidence intervals (2,000 resamples; seed 2026).
+The raw CSV records median, mean, standard deviation, and P95 runtime together
+with study-plan, slack, direct-route, and detour fields. A sidecar metadata JSON
+records matrix preprocessing separately. The app reports reward/gap dispersion
+and reproducible 95% bootstrap confidence intervals (2,000 resamples; seed 2026).
 
 Use `--rebuild-matrix` after changing the graph or location coordinates.
 
@@ -98,14 +102,15 @@ or another defensible source.
 
 ## Streamlit benchmark dashboard
 
-Run the main application and select **Research benchmark** in the sidebar:
+Run the main application and select **Research benchmark** in the top navigation:
 
 ```powershell
 streamlit run app.py
 ```
 
-The dashboard reports mean reward, mean optimality gap, feasibility rate, and
-mean runtime for every solver. It loads results in this order when available:
+The dashboard reports reward, optimality gap, feasibility, study-plan rate,
+deadline slack, walking detour, uncertainty, and runtime for every solver. It
+loads results in this order when available:
 
 1. `research/results/penn_baseline_results.csv` (raw Penn experiment rows);
 2. `research/results/penn_quick_summary.csv` (saved 12-scenario Penn pilot);
