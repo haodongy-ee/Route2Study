@@ -1,0 +1,12 @@
+{
+  "generated_at_utc": "2026-09-19T20:35:33.594579+00:00",
+  "locations_load_ms": 18.8173,
+  "matrix_setup_ms": 7.1162,
+  "matrix_source": "cached_csv",
+  "order_seed": 2026,
+  "preprocessing_ms": 25.9335,
+  "rows": 2880,
+  "scenarios_per_solver": 960,
+  "timing_repeats": 10,
+  "warmup_runs": 2
+}
