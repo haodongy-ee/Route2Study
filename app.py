@@ -1445,23 +1445,22 @@ favorite_badge = (
     if best["is_favorite"]
     else ""
 )
-st.markdown(
-    f"""
-    <div class="recommendation-card">
-        <h3>Recommended study stop: {safe_study_name}</h3>
-        <span class="status-pill">{open_label} · {safe_hours}</span>
-        <span class="status-pill">Crowding: {crowd_label} · {crowd_detail}</span>
-        {favorite_badge}
-        <p>
-            Walk {best['walk_to_study']} minutes to the study space,
-            study for approximately {best['study_minutes']} minutes,
-            then walk {best['walk_to_class']} minutes to class.
-        </p>
-        <div>{reason_html}</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
+recommendation_html = (
+    '<div class="recommendation-card">'
+    f"<h3>Recommended study stop: {safe_study_name}</h3>"
+    f'<span class="status-pill">{open_label} · {safe_hours}</span>'
+    '<span class="status-pill">'
+    f"Crowding: {crowd_label} · {crowd_detail}</span>"
+    f"{favorite_badge}"
+    "<p>"
+    f"Walk {best['walk_to_study']} minutes to the study space, "
+    f"study for approximately {best['study_minutes']} minutes, "
+    f"then walk {best['walk_to_class']} minutes to class."
+    "</p>"
+    f"<div>{reason_html}</div>"
+    "</div>"
 )
+st.markdown(recommendation_html, unsafe_allow_html=True)
 
 walk_share = min(100, 100 * best["total_walking"] / available_minutes)
 study_share = min(100 - walk_share, 100 * best["study_minutes"] / available_minutes)
