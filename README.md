@@ -11,16 +11,25 @@ time-budgeted open orienteering formulation.
 
 [Open Route2Study](https://route2study.streamlit.app/)
 
-Use the top navigation to switch between the interactive route planner and the
-research benchmark dashboard.
+Use the top navigation to switch between the personalized planner, **My
+Routine**, and the research benchmark dashboard.
 
 ## Features
 
 - Start from a campus building, street address, map pin, or browser location.
+- Save a session-level routine with a preferred start, class building, study
+  style, walking pace, minimum study block, transition buffer, and favorite
+  study spaces.
+- Load the saved routine in one tap or build a quick plan from the current
+  Penn time.
 - Route on the Penn-area OpenStreetMap pedestrian network.
-- Rank study spaces by available study time and user preference.
+- Rank study spaces by available study time, user preference, walking pace,
+  favorites, opening status, and optional live crowd awareness.
 - Check today's official Penn Libraries hours at the planned arrival time.
 - Use anonymous crowd reports from the last two hours to avoid busy spaces.
+- Explain why the top recommendation fits, visualize the time allocation, open
+  the two-leg walk in Google Maps, and download the study block as a calendar
+  event or text summary.
 - Use a responsive planner, map, metrics, and navigation on mobile screens.
 - Compare exact dynamic programming, reward-per-minute greedy, and nearest-stop
   solvers using reward, optimality gap, feasibility, study-plan rate, deadline
@@ -45,7 +54,10 @@ data/penn_locations.csv
 data/penn_walking_network.graphml
 ```
 
-Use the top navigation to switch between **Plan a route** and **Research benchmark**.
+Use the top navigation to switch between **Plan**, **My routine**, and
+**Research**. Routine settings are stored in the active Streamlit session; a
+persistent account/database layer is intentionally left for the next product
+phase.
 The benchmark page can run without loading the large walking-network file.
 
 ## Reproduce the experiments
