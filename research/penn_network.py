@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Collection, Mapping
 
 import pandas as pd
 
@@ -147,6 +148,8 @@ def create_penn_instance(
     destination_name: str,
     preference: str,
     time_budget: float,
+    excluded_study_names: Collection[str] | None = None,
+    prize_multipliers: Mapping[str, float] | None = None,
 ) -> tuple[OrienteeringInstance, dict[int, str]]:
     """Create one solver instance and its node-to-building mapping."""
 
@@ -155,9 +158,18 @@ def create_penn_instance(
         if name not in lookup.index:
             raise KeyError(f"Unknown Penn location: {name}")
 
+    excluded = set(excluded_study_names or ())
+    multipliers = dict(prize_multipliers or {})
+    known_names = set(locations["name"])
+    unknown = (excluded | set(multipliers)) - known_names
+    if unknown:
+        raise KeyError(f"Unknown Penn study location(s): {', '.join(sorted(unknown))}")
+    if any(not 0 <= float(value) <= 1 for value in multipliers.values()):
+        raise ValueError("Prize multipliers must be between 0 and 1.")
+
     candidates = locations.loc[locations["can_be_study"] == 1].copy()
     candidates = candidates.loc[
-        ~candidates["name"].isin([start_name, destination_name])
+        ~candidates["name"].isin([start_name, destination_name, *excluded])
     ].reset_index(drop=True)
 
     ordered_names = [start_name, *candidates["name"].tolist(), destination_name]
@@ -166,7 +178,11 @@ def create_penn_instance(
         for first in ordered_names
     )
     prizes = tuple(
-        preference_prize(row, preference)
+        round(
+            preference_prize(row, preference)
+            * float(multipliers.get(row["name"], 1.0)),
+            4,
+        )
         for _, row in candidates.iterrows()
     )
     service_minutes = tuple(

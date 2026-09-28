@@ -87,11 +87,37 @@ For publication-style timing, use repeated measurements and warm-ups:
 python research\run_penn_experiments.py --timing-repeats 10 --warmup-runs 2 --order-seed 2026
 ```
 
+Run the separate pressure-test dataset with tight budgets and five deterministic
+uncertainty seeds:
+
+```powershell
+python research\run_penn_experiments.py `
+  --stress `
+  --timing-repeats 10 `
+  --warmup-runs 2 `
+  --order-seed 2026 `
+  --uncertainty-seeds 2026 2027 2028 2029 2030
+```
+
+The stress run evaluates 20, 30, 45, 60, and 90 minute budgets under:
+
+- `baseline`: no closures and Low crowding;
+- `moderate`: 15% closure probability and mostly Low/Medium crowding;
+- `severe`: 30% closure probability and mostly Medium/High crowding.
+
+Venue states are deterministic for a scenario/profile/seed tuple. A closed
+venue is removed from the candidate set; crowding scales its personalized
+reward by 1.00 (Low), 0.75 (Medium), or 0.50 (High). Baseline runs once, while
+Moderate and Severe run over every supplied uncertainty seed.
+
 Each scenario rotates solver order deterministically to reduce cache/order bias.
 The raw CSV records median, mean, standard deviation, and P95 runtime together
 with study-plan, slack, direct-route, and detour fields. A sidecar metadata JSON
 records matrix preprocessing separately. The app reports reward/gap dispersion
 and reproducible 95% bootstrap confidence intervals (2,000 resamples; seed 2026).
+For detour, the dashboard reports mean absolute minutes, median row-level
+percentage, and ratio-of-means rather than relying on an unstable mean of
+percentages.
 
 Use `--rebuild-matrix` after changing the graph or location coordinates.
 
@@ -112,9 +138,10 @@ The dashboard reports reward, optimality gap, feasibility, study-plan rate,
 deadline slack, walking detour, uncertainty, and runtime for every solver. It
 loads results in this order when available:
 
-1. `research/results/penn_baseline_results.csv` (raw Penn experiment rows);
-2. `research/results/penn_quick_summary.csv` (saved 12-scenario Penn pilot);
-3. `research/results/baseline_results.csv` (raw synthetic experiment rows).
+1. `research/results/penn_stress_results.csv` (when a stress run is available);
+2. `research/results/penn_baseline_results.csv` (raw Penn experiment rows);
+3. `research/results/penn_quick_summary.csv` (saved 12-scenario Penn pilot);
+4. `research/results/baseline_results.csv` (raw synthetic experiment rows).
 
 Runtime values are local wall-clock measurements and should only be compared
 within the same run and hardware environment.

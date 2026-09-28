@@ -36,6 +36,12 @@ from research.penn_network import (  # noqa: E402
     load_locations,
     save_matrix_and_audit,
 )
+from research.stress import (  # noqa: E402
+    CROWD_MULTIPLIERS,
+    STRESS_PROFILES,
+    condition_summary,
+    simulate_venue_conditions,
+)
 
 
 DATA_DIR = PROJECT_ROOT / "data"
@@ -45,6 +51,7 @@ GRAPH_FILE = DATA_DIR / "penn_walking_network.graphml"
 MATRIX_FILE = RESEARCH_DIR / "cache" / "penn_travel_minutes.csv"
 AUDIT_FILE = RESEARCH_DIR / "cache" / "penn_location_snap_audit.csv"
 DEFAULT_OUTPUT = RESEARCH_DIR / "results" / "penn_baseline_results.csv"
+DEFAULT_STRESS_OUTPUT = RESEARCH_DIR / "results" / "penn_stress_results.csv"
 
 SOLVERS = (
     solve_exact_dynamic_programming,
@@ -70,7 +77,19 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT,
+        default=None,
+    )
+    parser.add_argument(
+        "--stress",
+        action="store_true",
+        help="Run closure/crowding stress tests with tight 20/30 minute budgets.",
+    )
+    parser.add_argument(
+        "--uncertainty-seeds",
+        type=int,
+        nargs="+",
+        default=[2026, 2027, 2028, 2029, 2030],
+        help="Monte Carlo seeds used for venue closures and crowding.",
     )
     parser.add_argument(
         "--timing-repeats",
@@ -182,90 +201,153 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
         locations["can_be_class"] == 1, "name"
     ].tolist()
     preferences = list(PREFERENCE_COLUMNS)
-    budgets = [45.0, 60.0, 90.0]
+    budgets = (
+        [20.0, 30.0, 45.0, 60.0, 90.0]
+        if args.stress
+        else [45.0, 60.0, 90.0]
+    )
+    profiles = (
+        list(STRESS_PROFILES.values())
+        if args.stress
+        else [STRESS_PROFILES["baseline"]]
+    )
+    uncertainty_seeds = list(dict.fromkeys(args.uncertainty_seeds))
+    if not uncertainty_seeds:
+        raise ValueError("--uncertainty-seeds must contain at least one integer")
 
     if args.quick:
         residences = residences[:2]
         destinations = destinations[:3]
         preferences = ["Quiet"]
-        budgets = [45.0, 60.0]
+        budgets = [20.0, 30.0] if args.stress else [45.0, 60.0]
+        uncertainty_seeds = uncertainty_seeds[:2]
 
     records = []
     scenario_index = 0
+
+    study_names = locations.loc[locations["can_be_study"] == 1, "name"].tolist()
+    base_scenario_index = 0
 
     for start_name in residences:
         for destination_name in destinations:
             for preference in preferences:
                 for time_budget in budgets:
-                    scenario_index += 1
-                    instance, node_names = create_penn_instance(
-                        locations=locations,
-                        travel_matrix=travel_matrix,
-                        start_name=start_name,
-                        destination_name=destination_name,
-                        preference=preference,
-                        time_budget=time_budget,
+                    base_scenario_index += 1
+                    scenario_key = (
+                        f"{start_name}|{destination_name}|{preference}|{time_budget:g}"
                     )
-                    direct_travel_minutes = float(
-                        travel_matrix.loc[start_name, destination_name]
-                    )
-
-                    solver_order = list(SOLVERS)
-                    random.Random(args.order_seed + scenario_index).shuffle(solver_order)
-                    scenario_solutions = {}
-                    for solver in solver_order:
-                        solution, timing = benchmark_solver(
-                            solver,
-                            instance,
-                            warmups=args.warmup_runs,
-                            repeats=args.timing_repeats,
+                    profile_seed_pairs = []
+                    for profile in profiles:
+                        seeds = (
+                            uncertainty_seeds[:1]
+                            if profile.name == "baseline"
+                            else uncertainty_seeds
                         )
-                        scenario_solutions[solver] = (solution, timing)
+                        profile_seed_pairs.extend((profile, seed) for seed in seeds)
 
-                    optimal_reward = scenario_solutions[
-                        solve_exact_dynamic_programming
-                    ][0].reward
-                    for solver in SOLVERS:
-                        solution, timing = scenario_solutions[solver]
-                        if optimal_reward > 0:
-                            gap = 100 * (
-                                optimal_reward - solution.reward
-                            ) / optimal_reward
-                        else:
-                            gap = 0.0
-
-                        outcome = operational_metrics(
-                            solution,
-                            time_budget,
-                            direct_travel_minutes,
+                    for profile, uncertainty_seed in profile_seed_pairs:
+                        conditions = simulate_venue_conditions(
+                            study_names,
+                            profile,
+                            uncertainty_seed,
+                            scenario_key,
+                        )
+                        excluded = {
+                            name
+                            for name, status in conditions.items()
+                            if bool(status["closed"])
+                        }
+                        multipliers = {
+                            name: float(status["prize_multiplier"])
+                            for name, status in conditions.items()
+                            if name not in excluded
+                        }
+                        disruption = condition_summary(conditions)
+                        scenario_index += 1
+                        instance, node_names = create_penn_instance(
+                            locations=locations,
+                            travel_matrix=travel_matrix,
+                            start_name=start_name,
+                            destination_name=destination_name,
+                            preference=preference,
+                            time_budget=time_budget,
+                            excluded_study_names=excluded,
+                            prize_multipliers=multipliers,
+                        )
+                        direct_travel_minutes = float(
+                            travel_matrix.loc[start_name, destination_name]
                         )
 
-                        records.append(
-                            {
-                                "scenario_index": scenario_index,
-                                "start": start_name,
-                                "destination": destination_name,
-                                "preference": preference,
-                                "time_budget": time_budget,
-                                "solver": solution.solver,
-                                "reward": solution.reward,
-                                "optimal_reward": optimal_reward,
-                                "optimality_gap_percent": round(max(0.0, gap), 4),
-                                "travel_minutes": solution.travel_minutes,
-                                "study_minutes": solution.service_minutes,
-                                "total_minutes": solution.total_minutes,
-                                "visited_count": solution.visited_count,
-                                "feasible": solution.feasible,
-                                **outcome,
-                                "runtime_ms": round(timing["runtime_ms"], 4),
-                                "runtime_mean_ms": round(timing["runtime_mean_ms"], 4),
-                                "runtime_p95_ms": round(timing["runtime_p95_ms"], 4),
-                                "runtime_std_ms": round(timing["runtime_std_ms"], 4),
-                                "timing_repeats": args.timing_repeats,
-                                "order_seed": args.order_seed,
-                                "route": route_names(solution, node_names),
-                            }
-                        )
+                        solver_order = list(SOLVERS)
+                        random.Random(
+                            args.order_seed + scenario_index
+                        ).shuffle(solver_order)
+                        scenario_solutions = {}
+                        for solver in solver_order:
+                            solution, timing = benchmark_solver(
+                                solver,
+                                instance,
+                                warmups=args.warmup_runs,
+                                repeats=args.timing_repeats,
+                            )
+                            scenario_solutions[solver] = (solution, timing)
+
+                        optimal_reward = scenario_solutions[
+                            solve_exact_dynamic_programming
+                        ][0].reward
+                        for solver in SOLVERS:
+                            solution, timing = scenario_solutions[solver]
+                            if optimal_reward > 0:
+                                gap = 100 * (
+                                    optimal_reward - solution.reward
+                                ) / optimal_reward
+                            else:
+                                gap = 0.0
+
+                            outcome = operational_metrics(
+                                solution,
+                                time_budget,
+                                direct_travel_minutes,
+                            )
+
+                            records.append(
+                                {
+                                    "scenario_index": scenario_index,
+                                    "base_scenario_index": base_scenario_index,
+                                    "start": start_name,
+                                    "destination": destination_name,
+                                    "preference": preference,
+                                    "time_budget": time_budget,
+                                    "pressure_profile": profile.name,
+                                    "uncertainty_seed": uncertainty_seed,
+                                    **disruption,
+                                    "solver": solution.solver,
+                                    "reward": solution.reward,
+                                    "optimal_reward": optimal_reward,
+                                    "optimality_gap_percent": round(
+                                        max(0.0, gap), 4
+                                    ),
+                                    "travel_minutes": solution.travel_minutes,
+                                    "study_minutes": solution.service_minutes,
+                                    "total_minutes": solution.total_minutes,
+                                    "visited_count": solution.visited_count,
+                                    "feasible": solution.feasible,
+                                    **outcome,
+                                    "runtime_ms": round(timing["runtime_ms"], 4),
+                                    "runtime_mean_ms": round(
+                                        timing["runtime_mean_ms"], 4
+                                    ),
+                                    "runtime_p95_ms": round(
+                                        timing["runtime_p95_ms"], 4
+                                    ),
+                                    "runtime_std_ms": round(
+                                        timing["runtime_std_ms"], 4
+                                    ),
+                                    "timing_repeats": args.timing_repeats,
+                                    "order_seed": args.order_seed,
+                                    "route": route_names(solution, node_names),
+                                }
+                            )
 
     results = pd.DataFrame.from_records(records)
     results.attrs.update(
@@ -277,6 +359,21 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
             "timing_repeats": args.timing_repeats,
             "warmup_runs": args.warmup_runs,
             "order_seed": args.order_seed,
+            "experiment_mode": "stress" if args.stress else "baseline",
+            "uncertainty_seeds": uncertainty_seeds,
+            "pressure_profiles": [profile.name for profile in profiles],
+            "stress_model_version": 1,
+            "stress_profile_parameters": {
+                profile.name: {
+                    "closure_probability": profile.closure_probability,
+                    "crowd_probabilities": dict(
+                        zip(CROWD_MULTIPLIERS, profile.crowd_probabilities)
+                    ),
+                }
+                for profile in profiles
+            },
+            "crowd_prize_multipliers": CROWD_MULTIPLIERS,
+            "time_budgets": budgets,
         }
     )
     return results
@@ -301,10 +398,29 @@ def print_summary(results: pd.DataFrame) -> None:
     summary["study_plan_rate"] *= 100
     print("\nPenn walking-network experiment summary\n")
     print(summary.to_string(index=False, float_format=lambda value: f"{value:.3f}"))
+    if {"pressure_profile", "time_budget"}.issubset(results.columns):
+        stress = (
+            results.groupby(
+                ["pressure_profile", "time_budget", "solver"], as_index=False
+            )
+            .agg(
+                scenarios=("scenario_index", "count"),
+                feasible_rate=("feasible", "mean"),
+                study_plan_rate=("study_plan", "mean"),
+                mean_reward=("reward", "mean"),
+                mean_gap_percent=("optimality_gap_percent", "mean"),
+            )
+            .sort_values(["pressure_profile", "time_budget", "mean_gap_percent"])
+        )
+        stress[["feasible_rate", "study_plan_rate"]] *= 100
+        print("\nStress breakdown by pressure and budget\n")
+        print(stress.to_string(index=False, float_format=lambda value: f"{value:.3f}"))
 
 
 def main() -> None:
     args = parse_arguments()
+    if args.output is None:
+        args.output = DEFAULT_STRESS_OUTPUT if args.stress else DEFAULT_OUTPUT
     results = run(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     results.to_csv(args.output, index=False)

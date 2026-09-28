@@ -88,6 +88,12 @@ def summarize_results(results: pd.DataFrame) -> pd.DataFrame:
             study_plan_rate_percent=("study_plan_numeric", "mean"),
             mean_deadline_slack_minutes=("deadline_slack_minutes", "mean"),
             mean_walking_detour_minutes=("walking_detour_minutes", "mean"),
+            median_walking_detour_percent=(
+                "walking_detour_percent",
+                lambda values: (
+                    values.dropna().median() if values.notna().any() else float("nan")
+                ),
+            ),
             mean_runtime_ms=("runtime_ms", "mean"),
         )
         .sort_values(["mean_gap_percent", "mean_runtime_ms"])
@@ -95,6 +101,13 @@ def summarize_results(results: pd.DataFrame) -> pd.DataFrame:
     )
     summary["feasible_rate_percent"] *= 100
     summary["study_plan_rate_percent"] *= 100
+    ratio_by_solver = {
+        solver: _detour_ratio_of_means(group)
+        for solver, group in clean.groupby("solver")
+    }
+    summary["detour_ratio_of_means_percent"] = summary["solver"].map(
+        ratio_by_solver
+    )
     summary.insert(1, "method", summary["solver"].map(solver_label))
     return summary
 
@@ -119,8 +132,22 @@ def _bootstrap_mean_interval(
         return float("nan"), float("nan")
     if len(numeric) == 1:
         return float(numeric[0]), float(numeric[0])
-    draws = rng.choice(numeric, size=(samples, len(numeric)), replace=True)
-    means = draws.mean(axis=1)
+
+    # Bound the temporary resampling matrix so the 52,800-row stress dataset
+    # remains safe on Streamlit Community Cloud. Batching is statistically
+    # identical to drawing all bootstrap replicates in one allocation because
+    # the same RNG stream is consumed in the same order.
+    max_draw_elements = 2_000_000
+    batch_size = max(1, min(samples, max_draw_elements // len(numeric)))
+    means = np.empty(samples, dtype=float)
+    for start in range(0, samples, batch_size):
+        stop = min(samples, start + batch_size)
+        draws = rng.choice(
+            numeric,
+            size=(stop - start, len(numeric)),
+            replace=True,
+        )
+        means[start:stop] = draws.mean(axis=1)
     low, high = np.percentile(means, [2.5, 97.5])
     return float(low), float(high)
 
@@ -166,7 +193,38 @@ def add_operational_metrics(results: pd.DataFrame) -> pd.DataFrame:
             clean["walking_detour_minutes"], errors="raise"
         )
 
+    if "walking_detour_percent" not in clean.columns:
+        if "direct_travel_minutes" in clean.columns:
+            direct = pd.to_numeric(
+                clean["direct_travel_minutes"], errors="raise"
+            )
+            clean["walking_detour_percent"] = np.where(
+                direct > 0,
+                100 * clean["walking_detour_minutes"] / direct,
+                0.0,
+            )
+        else:
+            clean["walking_detour_percent"] = float("nan")
+    else:
+        clean["walking_detour_percent"] = pd.to_numeric(
+            clean["walking_detour_percent"], errors="raise"
+        )
+
     return clean
+
+
+def _detour_ratio_of_means(group: pd.DataFrame) -> float:
+    """Return aggregate detour/direct travel, avoiding unstable row ratios."""
+
+    if "direct_travel_minutes" not in group.columns:
+        return float("nan")
+    direct = pd.to_numeric(group["direct_travel_minutes"], errors="raise")
+    detour = pd.to_numeric(group["walking_detour_minutes"], errors="raise")
+    valid = direct.notna() & detour.notna()
+    direct_total = direct.loc[valid].sum()
+    if direct_total <= 0:
+        return float("nan")
+    return float(100 * detour.loc[valid].sum() / direct_total)
 
 
 def summarize_results_with_uncertainty(
@@ -197,6 +255,9 @@ def summarize_results_with_uncertainty(
         plan_low, plan_high = _bootstrap_mean_interval(
             group["study_plan_numeric"], rng, bootstrap_samples
         )
+        feasible_low, feasible_high = _bootstrap_mean_interval(
+            group["feasible_numeric"], rng, bootstrap_samples
+        )
         slack_low, slack_high = _bootstrap_mean_interval(
             group["deadline_slack_minutes"], rng, bootstrap_samples
         )
@@ -217,6 +278,8 @@ def summarize_results_with_uncertainty(
                 "gap_ci_low": gap_low,
                 "gap_ci_high": gap_high,
                 "feasible_rate_percent": 100 * group["feasible_numeric"].mean(),
+                "feasible_ci_low": 100 * feasible_low,
+                "feasible_ci_high": 100 * feasible_high,
                 "study_plan_rate_percent": 100 * group["study_plan_numeric"].mean(),
                 "study_plan_ci_low": 100 * plan_low,
                 "study_plan_ci_high": 100 * plan_high,
@@ -228,6 +291,12 @@ def summarize_results_with_uncertainty(
                 "mean_walking_detour_minutes": group[
                     "walking_detour_minutes"
                 ].mean(),
+                "median_walking_detour_percent": (
+                    group["walking_detour_percent"].dropna().median()
+                    if group["walking_detour_percent"].notna().any()
+                    else float("nan")
+                ),
+                "detour_ratio_of_means_percent": _detour_ratio_of_means(group),
                 "detour_ci_low": detour_low,
                 "detour_ci_high": detour_high,
                 "mean_runtime_ms": group["runtime_ms"].mean(),
@@ -241,6 +310,31 @@ def summarize_results_with_uncertainty(
         .sort_values(["mean_gap_percent", "median_runtime_ms"])
         .reset_index(drop=True)
     )
+
+
+def summarize_stress_results(
+    results: pd.DataFrame,
+    bootstrap_samples: int = 500,
+    seed: int = 2026,
+) -> pd.DataFrame:
+    """Summarize each solver by pressure profile and time budget."""
+
+    required = REQUIRED_RESULT_COLUMNS | {"pressure_profile", "time_budget"}
+    _validate_columns(results, required)
+    records = []
+    grouped = results.groupby(["pressure_profile", "time_budget"], sort=True)
+    for group_index, ((profile, budget), group) in enumerate(grouped):
+        summary = summarize_results_with_uncertainty(
+            group,
+            bootstrap_samples=bootstrap_samples,
+            seed=seed + group_index,
+        )
+        summary.insert(0, "time_budget", float(budget))
+        summary.insert(0, "pressure_profile", str(profile))
+        records.append(summary)
+    if not records:
+        return pd.DataFrame()
+    return pd.concat(records, ignore_index=True)
 
 
 def load_raw_rigorous_summary(file_path: str | Path) -> pd.DataFrame:
