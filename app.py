@@ -26,8 +26,9 @@ from personalization import (
     walking_speed_for_pace,
 )
 from research.reporting import (
-    load_raw_rigorous_summary,
     load_saved_summary,
+    summarize_results_with_uncertainty,
+    summarize_stress_results,
 )
 from venue_status import (
     PENN_LIBRARY_HOURS_URL,
@@ -86,9 +87,15 @@ def render_research_benchmark():
 
     benchmark_options = {}
     penn_raw = RESULTS_DIR / "penn_baseline_results.csv"
+    penn_stress = RESULTS_DIR / "penn_stress_results.csv"
     penn_summary = RESULTS_DIR / "penn_quick_summary.csv"
     synthetic_raw = RESULTS_DIR / "baseline_results.csv"
 
+    if penn_stress.exists():
+        benchmark_options["Penn stress test · closures and crowding"] = (
+            "raw",
+            penn_stress,
+        )
     if penn_raw.exists():
         benchmark_options["Penn walking network · raw experiment"] = (
             "raw",
@@ -118,10 +125,37 @@ def render_research_benchmark():
     )
     result_kind, result_path = benchmark_options[selected_name]
     metadata = None
+    raw_results = None
+    stress_breakdown = None
 
     try:
         if result_kind == "raw":
-            summary = load_raw_rigorous_summary(result_path)
+            raw_results = pd.read_csv(result_path)
+            if {"pressure_profile", "time_budget"}.issubset(raw_results.columns):
+                filter_left, filter_right = st.columns(2)
+                profiles = sorted(raw_results["pressure_profile"].dropna().unique())
+                budgets = sorted(raw_results["time_budget"].dropna().unique())
+                with filter_left:
+                    selected_profiles = st.multiselect(
+                        "Pressure profiles",
+                        profiles,
+                        default=profiles,
+                    )
+                with filter_right:
+                    selected_budgets = st.multiselect(
+                        "Time budgets (minutes)",
+                        budgets,
+                        default=budgets,
+                    )
+                raw_results = raw_results.loc[
+                    raw_results["pressure_profile"].isin(selected_profiles)
+                    & raw_results["time_budget"].isin(selected_budgets)
+                ]
+                if raw_results.empty:
+                    st.warning("Select at least one pressure profile and time budget.")
+                    return
+                stress_breakdown = summarize_stress_results(raw_results)
+            summary = summarize_results_with_uncertainty(raw_results)
             metadata_path = result_path.with_suffix(".metadata.json")
             if metadata_path.exists():
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -220,6 +254,68 @@ def render_research_benchmark():
         st.subheader("Mean Solver Runtime (ms)")
         st.bar_chart(chart_data[["mean_runtime_ms"]])
 
+    if stress_breakdown is not None and not stress_breakdown.empty:
+        st.subheader("Stress-test Breakdown")
+        st.caption(
+            "Tight budgets expose missed study plans; Moderate and Severe "
+            "profiles add reproducible venue closures and crowding penalties."
+        )
+        breakdown = stress_breakdown.copy()
+        breakdown["series"] = (
+            breakdown["method"]
+            + " · "
+            + breakdown["pressure_profile"].str.title()
+        )
+        stress_left, stress_right = st.columns(2)
+        with stress_left:
+            st.markdown("**Study-plan rate by budget (%)**")
+            plan_chart = breakdown.pivot(
+                index="time_budget",
+                columns="series",
+                values="study_plan_rate_percent",
+            )
+            st.line_chart(plan_chart)
+        with stress_right:
+            st.markdown("**Feasibility rate by budget (%)**")
+            feasible_chart = breakdown.pivot(
+                index="time_budget",
+                columns="series",
+                values="feasible_rate_percent",
+            )
+            st.line_chart(feasible_chart)
+
+        stress_table = breakdown[
+            [
+                "pressure_profile",
+                "time_budget",
+                "method",
+                "scenarios",
+                "mean_reward",
+                "mean_gap_percent",
+                "feasible_rate_percent",
+                "study_plan_rate_percent",
+                "mean_walking_detour_minutes",
+                "median_walking_detour_percent",
+                "detour_ratio_of_means_percent",
+            ]
+        ].copy()
+        stress_table.columns = [
+            "Pressure",
+            "Budget (min)",
+            "Method",
+            "Scenarios",
+            "Reward",
+            "Gap (%)",
+            "Feasible (%)",
+            "Study plan (%)",
+            "Mean detour (min)",
+            "Median detour (%)",
+            "Detour ratio-of-means (%)",
+        ]
+        numeric_columns = stress_table.columns[3:]
+        stress_table[numeric_columns] = stress_table[numeric_columns].round(3)
+        st.dataframe(stress_table, width="stretch", hide_index=True)
+
     display_columns = [
         "method",
         "scenarios",
@@ -240,10 +336,18 @@ def render_research_benchmark():
                 "study_plan_rate_percent",
                 "mean_deadline_slack_minutes",
                 "mean_walking_detour_minutes",
+                "median_walking_detour_percent",
+                "detour_ratio_of_means_percent",
             ]
         )
         display_names.extend(
-            ["Study plan (%)", "Slack (min)", "Detour (min)"]
+            [
+                "Study plan (%)",
+                "Slack (min)",
+                "Mean detour (min)",
+                "Median detour (%)",
+                "Detour ratio-of-means (%)",
+            ]
         )
     display_columns.append("mean_runtime_ms")
     display_names.append("Runtime (ms)")
@@ -269,6 +373,8 @@ def render_research_benchmark():
                 "reward_ci_high",
                 "gap_ci_low",
                 "gap_ci_high",
+                "feasible_ci_low",
+                "feasible_ci_high",
                 "study_plan_ci_low",
                 "study_plan_ci_high",
                 "slack_ci_low",
@@ -284,6 +390,8 @@ def render_research_benchmark():
             "Reward CI high",
             "Gap CI low",
             "Gap CI high",
+            "Feasible CI low",
+            "Feasible CI high",
             "Study-plan CI low",
             "Study-plan CI high",
             "Slack CI low",
@@ -312,6 +420,15 @@ def render_research_benchmark():
             f"{metadata.get('preprocessing_ms', 0):.1f} ms",
         )
         protocol_4.metric("Order seed", metadata.get("order_seed", "—"))
+        if metadata.get("experiment_mode") == "stress":
+            seed_text = ", ".join(
+                str(value) for value in metadata.get("uncertainty_seeds", [])
+            )
+            st.caption(
+                "Pressure profiles: "
+                f"{', '.join(metadata.get('pressure_profiles', []))}. "
+                f"Uncertainty seeds: {seed_text}."
+            )
         st.caption(
             "Preprocessing is reported separately and is not included in solver runtime. "
             f"Travel matrix source: {metadata.get('matrix_source', 'unknown')}."

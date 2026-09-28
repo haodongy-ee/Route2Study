@@ -35,6 +35,8 @@ Routine**, and the research benchmark dashboard.
   solvers using reward, optimality gap, feasibility, study-plan rate, deadline
   slack, walking detour, runtime distributions, and reproducible 95% bootstrap
   confidence intervals.
+- Stress-test the planners under 20/30-minute budgets, temporary venue closures,
+  Low/Medium/High crowding, and multiple reproducible uncertainty seeds.
 - Reproduce synthetic and Penn walking-network experiments from command-line
   scripts.
 
@@ -80,16 +82,36 @@ Full Penn experiment:
 python research\run_penn_experiments.py --timing-repeats 10 --warmup-runs 2
 ```
 
+Penn pressure test (saved separately from the baseline):
+
+```powershell
+python research\run_penn_experiments.py `
+  --stress `
+  --timing-repeats 10 `
+  --warmup-runs 2 `
+  --order-seed 2026 `
+  --uncertainty-seeds 2026 2027 2028 2029 2030
+```
+
+This writes `penn_stress_results.csv` and its metadata sidecar. Baseline is
+evaluated once per OD/preference/budget combination; Moderate and Severe
+profiles are evaluated across all uncertainty seeds. Closed venues are removed
+from the instance, while Medium and High crowding multiply venue reward by
+0.75 and 0.50 respectively.
+
 The benchmark rotates solver timing order with a fixed seed, performs untimed
 warm-ups, and records median, mean, standard deviation, and P95 runtime. The app
 adds 95% bootstrap confidence intervals using 2,000 resamples and seed 2026.
 Route outcomes distinguish simply reaching class from actually scheduling a
 study stop. Walking-network preprocessing is saved separately in
 `penn_baseline_results.metadata.json` and is not mixed into solver runtime.
+Detour reporting emphasizes mean absolute minutes, median per-route percentage,
+and aggregate ratio-of-means so very short direct routes do not dominate.
 
-The app automatically prefers `research/results/penn_baseline_results.csv`
-when it exists. A checked-in `penn_quick_summary.csv` records the completed
-12-scenario pilot benchmark.
+The Research page exposes the stress dataset when
+`research/results/penn_stress_results.csv` exists, with filters and breakdowns
+by pressure profile and time budget. A checked-in `penn_quick_summary.csv`
+records the completed 12-scenario pilot benchmark.
 
 ## Tests
 
