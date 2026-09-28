@@ -1,0 +1,64 @@
+{
+  "crowd_prize_multipliers": {
+    "High": 0.5,
+    "Low": 1.0,
+    "Medium": 0.75
+  },
+  "experiment_mode": "stress",
+  "generated_at_utc": "2026-09-28T01:26:47.509709+00:00",
+  "locations_load_ms": 2.733242,
+  "matrix_setup_ms": 7131.448125,
+  "matrix_source": "rebuilt_from_graph",
+  "order_seed": 2026,
+  "preprocessing_ms": 7134.181367,
+  "pressure_profiles": [
+    "baseline",
+    "moderate",
+    "severe"
+  ],
+  "rows": 52800,
+  "scenarios_per_solver": 17600,
+  "stress_model_version": 1,
+  "stress_profile_parameters": {
+    "baseline": {
+      "closure_probability": 0.0,
+      "crowd_probabilities": {
+        "High": 0.0,
+        "Low": 1.0,
+        "Medium": 0.0
+      }
+    },
+    "moderate": {
+      "closure_probability": 0.15,
+      "crowd_probabilities": {
+        "High": 0.15,
+        "Low": 0.5,
+        "Medium": 0.35
+      }
+    },
+    "severe": {
+      "closure_probability": 0.3,
+      "crowd_probabilities": {
+        "High": 0.4,
+        "Low": 0.2,
+        "Medium": 0.4
+      }
+    }
+  },
+  "time_budgets": [
+    20.0,
+    30.0,
+    45.0,
+    60.0,
+    90.0
+  ],
+  "timing_repeats": 10,
+  "uncertainty_seeds": [
+    2026,
+    2027,
+    2028,
+    2029,
+    2030
+  ],
+  "warmup_runs": 2
+}
