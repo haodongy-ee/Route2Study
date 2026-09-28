@@ -68,6 +68,31 @@ class PennInstanceTests(unittest.TestCase):
         self.assertEqual(instance.service_minutes, (20.0,))
         self.assertEqual(node_names, {0: "Residence", 1: "Library", 2: "Classroom"})
 
+    def test_closure_removes_candidate(self) -> None:
+        instance, node_names = create_penn_instance(
+            self.locations,
+            self.matrix,
+            start_name="Residence",
+            destination_name="Classroom",
+            preference="Quiet",
+            time_budget=60,
+            excluded_study_names={"Library"},
+        )
+        self.assertEqual(instance.candidate_count, 0)
+        self.assertEqual(node_names, {0: "Residence", 1: "Classroom"})
+
+    def test_crowding_reduces_candidate_prize(self) -> None:
+        instance, _ = create_penn_instance(
+            self.locations,
+            self.matrix,
+            start_name="Residence",
+            destination_name="Classroom",
+            preference="Quiet",
+            time_budget=60,
+            prize_multipliers={"Library": 0.5},
+        )
+        self.assertEqual(instance.prizes, (5.4,))
+
 
 if __name__ == "__main__":
     unittest.main()

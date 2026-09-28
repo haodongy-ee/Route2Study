@@ -9,6 +9,7 @@ import pandas as pd
 from research.reporting import (
     load_saved_summary,
     summarize_results,
+    summarize_stress_results,
     summarize_results_with_uncertainty,
 )
 
@@ -68,6 +69,10 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(nearest["study_plan_rate_percent"], 50)
         self.assertEqual(nearest["mean_deadline_slack_minutes"], 3.5)
         self.assertEqual(nearest["mean_walking_detour_minutes"], 1.5)
+        self.assertAlmostEqual(nearest["median_walking_detour_percent"], 15)
+        self.assertAlmostEqual(
+            nearest["detour_ratio_of_means_percent"], 100 * 3 / 19
+        )
 
     def test_missing_column_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "runtime_ms"):
@@ -108,6 +113,8 @@ class ReportingTests(unittest.TestCase):
         self.assertGreaterEqual(nearest["reward_ci_high"], nearest["mean_reward"])
         self.assertEqual(nearest["study_plan_rate_percent"], 50)
         self.assertEqual(nearest["mean_deadline_slack_minutes"], 3.5)
+        self.assertEqual(nearest["feasible_ci_low"], 0)
+        self.assertEqual(nearest["feasible_ci_high"], 100)
 
     def test_older_results_leave_detour_unknown(self) -> None:
         old = self.results.drop(columns="direct_travel_minutes")
@@ -115,6 +122,14 @@ class ReportingTests(unittest.TestCase):
             old, bootstrap_samples=200
         )
         self.assertTrue(summary["mean_walking_detour_minutes"].isna().all())
+
+    def test_stress_summary_groups_pressure_and_budget(self) -> None:
+        stress = self.results.copy()
+        stress["pressure_profile"] = ["baseline", "baseline", "severe", "severe"]
+        summary = summarize_stress_results(stress, bootstrap_samples=100)
+        self.assertEqual(len(summary), 4)
+        self.assertEqual(set(summary["pressure_profile"]), {"baseline", "severe"})
+        self.assertEqual(set(summary["time_budget"]), {20.0, 30.0})
 
 
 if __name__ == "__main__":
