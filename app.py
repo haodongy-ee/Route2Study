@@ -5,7 +5,6 @@ from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import altair as alt
 import folium
 import networkx as nx
 import osmnx as ox
@@ -94,31 +93,45 @@ def render_metric_bar_chart(data, value_column, *, percent=False, rate=False):
     maximum = float(plot_data[value_column].max())
     domain = [0, 100] if rate else [0, max(maximum * 1.12, 1)]
     number_format = ".1f" if percent else ".3f"
-    chart = (
-        alt.Chart(plot_data)
-        .mark_bar(cornerRadiusTopLeft=5, cornerRadiusTopRight=5)
-        .encode(
-            x=alt.X("method:N", title=None, sort=None, axis=alt.Axis(labelAngle=0)),
-            y=alt.Y(
-                f"{value_column}:Q",
-                title=None,
-                scale=alt.Scale(domain=domain, nice=False),
-            ),
-            color=alt.Color(
-                "method:N",
-                legend=None,
-                scale=alt.Scale(range=CHART_COLORS),
-            ),
-            tooltip=[
-                alt.Tooltip("method:N", title="Method"),
-                alt.Tooltip(
-                    f"{value_column}:Q", title="Value", format=number_format
-                ),
+    chart_spec = {
+        "mark": {
+            "type": "bar",
+            "cornerRadiusTopLeft": 5,
+            "cornerRadiusTopRight": 5,
+        },
+        "height": 260,
+        "encoding": {
+            "x": {
+                "field": "method",
+                "type": "nominal",
+                "title": None,
+                "sort": None,
+                "axis": {"labelAngle": 0},
+            },
+            "y": {
+                "field": value_column,
+                "type": "quantitative",
+                "title": None,
+                "scale": {"domain": domain, "nice": False},
+            },
+            "color": {
+                "field": "method",
+                "type": "nominal",
+                "legend": None,
+                "scale": {"range": CHART_COLORS},
+            },
+            "tooltip": [
+                {"field": "method", "type": "nominal", "title": "Method"},
+                {
+                    "field": value_column,
+                    "type": "quantitative",
+                    "title": "Value",
+                    "format": number_format,
+                },
             ],
-        )
-        .properties(height=260)
-    )
-    st.altair_chart(chart, width="stretch")
+        },
+    }
+    st.vega_lite_chart(plot_data, chart_spec, width="stretch")
 
 
 def render_stress_line_chart(data, value_column):
@@ -136,41 +149,57 @@ def render_stress_line_chart(data, value_column):
 
     budget_min = float(plot_data["time_budget"].min())
     budget_max = float(plot_data["time_budget"].max())
-    chart = (
-        alt.Chart(plot_data)
-        .mark_line(point=alt.OverlayMarkDef(size=55), strokeWidth=2.5)
-        .encode(
-            x=alt.X(
-                "time_budget:Q",
-                title="Time budget (minutes)",
-                scale=alt.Scale(domain=[budget_min, budget_max], nice=False),
-            ),
-            y=alt.Y(
-                f"{value_column}:Q",
-                title="Rate (%)",
-                scale=alt.Scale(domain=[0, 100], nice=False),
-            ),
-            color=alt.Color(
-                "method:N",
-                title="Method",
-                scale=alt.Scale(range=CHART_COLORS),
-            ),
-            strokeDash=alt.StrokeDash(
-                "pressure_profile:N", title="Pressure"
-            ),
-            detail="series:N",
-            tooltip=[
-                alt.Tooltip("method:N", title="Method"),
-                alt.Tooltip("pressure_profile:N", title="Pressure"),
-                alt.Tooltip("time_budget:Q", title="Budget", format=".0f"),
-                alt.Tooltip(
-                    f"{value_column}:Q", title="Rate", format=".1f"
-                ),
+    chart_spec = {
+        "mark": {"type": "line", "point": {"size": 55}, "strokeWidth": 2.5},
+        "height": 285,
+        "encoding": {
+            "x": {
+                "field": "time_budget",
+                "type": "quantitative",
+                "title": "Time budget (minutes)",
+                "scale": {"domain": [budget_min, budget_max], "nice": False},
+            },
+            "y": {
+                "field": value_column,
+                "type": "quantitative",
+                "title": "Rate (%)",
+                "scale": {"domain": [0, 100], "nice": False},
+            },
+            "color": {
+                "field": "method",
+                "type": "nominal",
+                "title": "Method",
+                "scale": {"range": CHART_COLORS},
+            },
+            "strokeDash": {
+                "field": "pressure_profile",
+                "type": "nominal",
+                "title": "Pressure",
+            },
+            "detail": {"field": "series", "type": "nominal"},
+            "tooltip": [
+                {"field": "method", "type": "nominal", "title": "Method"},
+                {
+                    "field": "pressure_profile",
+                    "type": "nominal",
+                    "title": "Pressure",
+                },
+                {
+                    "field": "time_budget",
+                    "type": "quantitative",
+                    "title": "Budget",
+                    "format": ".0f",
+                },
+                {
+                    "field": value_column,
+                    "type": "quantitative",
+                    "title": "Rate",
+                    "format": ".1f",
+                },
             ],
-        )
-        .properties(height=285)
-    )
-    st.altair_chart(chart, width="stretch")
+        },
+    }
+    st.vega_lite_chart(plot_data, chart_spec, width="stretch")
 
 
 def render_research_benchmark():
