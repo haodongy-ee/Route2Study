@@ -5,6 +5,7 @@ from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import altair as alt
 import folium
 import networkx as nx
 import osmnx as ox
@@ -34,7 +35,7 @@ from venue_status import (
     PENN_LIBRARY_HOURS_URL,
     CrowdReportStore,
     crowd_penalty,
-    september_2026_regular_hours,
+    fall_2026_regular_hours,
     fetch_penn_library_hours,
     is_open_at,
 )
@@ -74,6 +75,102 @@ PREFERENCE_COLUMNS = {
     "Coffee nearby": "coffee_score",
     "Power outlets": "outlet_score",
 }
+
+CHART_COLORS = ["#2563EB", "#7C3AED", "#06B6D4", "#F59E0B", "#10B981"]
+
+
+def render_metric_bar_chart(data, value_column, *, percent=False, rate=False):
+    """Render a finite, explicitly scaled metric chart without Vega warnings."""
+
+    plot_data = data[["method", value_column]].copy()
+    plot_data[value_column] = pd.to_numeric(
+        plot_data[value_column], errors="coerce"
+    )
+    plot_data = plot_data.replace([math.inf, -math.inf], pd.NA).dropna()
+    if plot_data.empty:
+        st.info("This metric is not available for the selected experiment.")
+        return
+
+    maximum = float(plot_data[value_column].max())
+    domain = [0, 100] if rate else [0, max(maximum * 1.12, 1)]
+    number_format = ".1f" if percent else ".3f"
+    chart = (
+        alt.Chart(plot_data)
+        .mark_bar(cornerRadiusTopLeft=5, cornerRadiusTopRight=5)
+        .encode(
+            x=alt.X("method:N", title=None, sort=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y(
+                f"{value_column}:Q",
+                title=None,
+                scale=alt.Scale(domain=domain, nice=False),
+            ),
+            color=alt.Color(
+                "method:N",
+                legend=None,
+                scale=alt.Scale(range=CHART_COLORS),
+            ),
+            tooltip=[
+                alt.Tooltip("method:N", title="Method"),
+                alt.Tooltip(
+                    f"{value_column}:Q", title="Value", format=number_format
+                ),
+            ],
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def render_stress_line_chart(data, value_column):
+    """Render a percentage-by-budget chart with stable, explicit domains."""
+
+    plot_data = data[
+        ["time_budget", "series", "method", "pressure_profile", value_column]
+    ].copy()
+    for column in ("time_budget", value_column):
+        plot_data[column] = pd.to_numeric(plot_data[column], errors="coerce")
+    plot_data = plot_data.replace([math.inf, -math.inf], pd.NA).dropna()
+    if plot_data.empty:
+        st.info("No stress-test values match the selected filters.")
+        return
+
+    budget_min = float(plot_data["time_budget"].min())
+    budget_max = float(plot_data["time_budget"].max())
+    chart = (
+        alt.Chart(plot_data)
+        .mark_line(point=alt.OverlayMarkDef(size=55), strokeWidth=2.5)
+        .encode(
+            x=alt.X(
+                "time_budget:Q",
+                title="Time budget (minutes)",
+                scale=alt.Scale(domain=[budget_min, budget_max], nice=False),
+            ),
+            y=alt.Y(
+                f"{value_column}:Q",
+                title="Rate (%)",
+                scale=alt.Scale(domain=[0, 100], nice=False),
+            ),
+            color=alt.Color(
+                "method:N",
+                title="Method",
+                scale=alt.Scale(range=CHART_COLORS),
+            ),
+            strokeDash=alt.StrokeDash(
+                "pressure_profile:N", title="Pressure"
+            ),
+            detail="series:N",
+            tooltip=[
+                alt.Tooltip("method:N", title="Method"),
+                alt.Tooltip("pressure_profile:N", title="Pressure"),
+                alt.Tooltip("time_budget:Q", title="Budget", format=".0f"),
+                alt.Tooltip(
+                    f"{value_column}:Q", title="Rate", format=".1f"
+                ),
+            ],
+        )
+        .properties(height=285)
+    )
+    st.altair_chart(chart, width="stretch")
 
 
 def render_research_benchmark():
@@ -216,35 +313,40 @@ def render_research_benchmark():
         )
 
     chart_left, chart_right = st.columns(2)
-    chart_data = summary.set_index("method")
     with chart_left:
         st.subheader("Mean Reward")
-        st.bar_chart(chart_data[["mean_reward"]])
+        render_metric_bar_chart(summary, "mean_reward")
     with chart_right:
         st.subheader("Mean Optimality Gap (%)")
-        st.bar_chart(chart_data[["mean_gap_percent"]])
+        render_metric_bar_chart(summary, "mean_gap_percent", percent=True)
 
     chart_left, chart_right = st.columns(2)
     with chart_left:
         st.subheader("Feasibility Rate (%)")
-        st.bar_chart(chart_data[["feasible_rate_percent"]])
+        render_metric_bar_chart(
+            summary, "feasible_rate_percent", percent=True, rate=True
+        )
     with chart_right:
         if operational_available:
             st.subheader("Study-plan Rate (%)")
-            st.bar_chart(chart_data[["study_plan_rate_percent"]])
+            render_metric_bar_chart(
+                summary, "study_plan_rate_percent", percent=True, rate=True
+            )
         else:
             st.subheader("Mean Runtime (ms)")
-            st.bar_chart(chart_data[["mean_runtime_ms"]])
+            render_metric_bar_chart(summary, "mean_runtime_ms")
 
     if operational_available:
         chart_left, chart_right = st.columns(2)
         with chart_left:
             st.subheader("Mean Deadline Slack (min)")
-            st.bar_chart(chart_data[["mean_deadline_slack_minutes"]])
+            render_metric_bar_chart(summary, "mean_deadline_slack_minutes")
         with chart_right:
             st.subheader("Mean Walking Detour (min)")
             if summary["mean_walking_detour_minutes"].notna().any():
-                st.bar_chart(chart_data[["mean_walking_detour_minutes"]])
+                render_metric_bar_chart(
+                    summary, "mean_walking_detour_minutes"
+                )
             else:
                 st.info(
                     "Walking detour needs `direct_travel_minutes`. Run the "
@@ -252,7 +354,7 @@ def render_research_benchmark():
                 )
 
         st.subheader("Mean Solver Runtime (ms)")
-        st.bar_chart(chart_data[["mean_runtime_ms"]])
+        render_metric_bar_chart(summary, "mean_runtime_ms")
 
     if stress_breakdown is not None and not stress_breakdown.empty:
         st.subheader("Stress-test Breakdown")
@@ -269,20 +371,10 @@ def render_research_benchmark():
         stress_left, stress_right = st.columns(2)
         with stress_left:
             st.markdown("**Study-plan rate by budget (%)**")
-            plan_chart = breakdown.pivot(
-                index="time_budget",
-                columns="series",
-                values="study_plan_rate_percent",
-            )
-            st.line_chart(plan_chart)
+            render_stress_line_chart(breakdown, "study_plan_rate_percent")
         with stress_right:
             st.markdown("**Feasibility rate by budget (%)**")
-            feasible_chart = breakdown.pivot(
-                index="time_budget",
-                columns="series",
-                values="feasible_rate_percent",
-            )
-            st.line_chart(feasible_chart)
+            render_stress_line_chart(breakdown, "feasible_rate_percent")
 
         stress_table = breakdown[
             [
@@ -443,16 +535,29 @@ def render_research_benchmark():
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_official_hours(planning_moment):
-    """Load today's Penn Libraries hours with a short-lived cache."""
+def load_official_hours(planning_date):
+    """Load Penn hours, preserving a clearly labeled regular-week fallback."""
 
+    planning_moment = datetime.combine(
+        planning_date, time(12, 0), tzinfo=PENN_TIMEZONE
+    )
+    fallback = fall_2026_regular_hours(planning_moment)
     try:
-        hours = fetch_penn_library_hours()
+        live_hours = fetch_penn_library_hours(planning_moment)
+        hours = {**fallback, **live_hours}
         if not hours:
             raise ValueError("Penn hours page returned no supported locations")
-        return hours, "live", None
+        source = "live" if len(live_hours) == 3 else "mixed"
+        missing_count = 3 - len(live_hours)
+        detail = (
+            f"{missing_count} venue calendar(s) used the regular-week fallback"
+            if missing_count
+            else None
+        )
+        return hours, source, detail
     except (OSError, TimeoutError, ValueError) as error:
-        return september_2026_regular_hours(planning_moment), "month_schedule", str(error)
+        source = "fall_schedule" if fallback else "unavailable"
+        return fallback, source, str(error)
 
 
 @st.cache_resource
@@ -1444,12 +1549,22 @@ if available_minutes <= 0:
     st.error("Class must start after the time you become available.")
     st.stop()
 
-official_hours, hours_source, hours_error = load_official_hours(available_datetime)
-if hours_source == "month_schedule" and official_hours:
+official_hours, hours_source, hours_error = load_official_hours(planning_date)
+if hours_source == "live":
     st.caption(
-        "Live Penn hours could not be refreshed, so this plan uses the official "
-        "September 2026 regular schedule verified September 14. Check the source for "
-        "holiday or event exceptions."
+        "✓ Penn Libraries hours verified from the official live calendar · "
+        "cached for 15 minutes"
+    )
+elif hours_source == "mixed":
+    st.caption(
+        "Penn Libraries returned partial live data. Missing venues use the "
+        "verified Fall 2026 regular-week pattern; check exceptions before traveling."
+    )
+elif hours_source == "fall_schedule" and official_hours:
+    st.caption(
+        "Live Penn hours could not be refreshed, so this plan uses the verified "
+        "Fall 2026 regular-week pattern. Holiday and special-event dates are excluded; "
+        "check the source before traveling."
     )
 elif not official_hours:
     st.caption(
@@ -1735,8 +1850,9 @@ for venue_name in study_location_names:
 st.dataframe(pd.DataFrame(status_rows), width="stretch", hide_index=True)
 st.caption(
     f"Library hours: [Penn Libraries official Hours page]({PENN_LIBRARY_HOURS_URL}), "
-    "cached for 15 minutes. When live refresh is unavailable during September, "
-    "the verified September 2026 schedule is used; academic-building hours are not inferred."
+    "cached for 15 minutes. Route2Study checks both the live summary and individual "
+    "venue calendars; a labeled Fall 2026 regular-week fallback is used only when needed. "
+    "Academic-building hours are not inferred."
 )
 
 with st.expander("View Location Data"):

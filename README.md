@@ -126,9 +126,11 @@ baselines establish speed and solution-quality references for later learned
 policies. Penn preference scores are currently prototype engineering values;
 they are not claims about measured student behavior.
 
-Penn Libraries hours come from the official daily hours page and are cached for
-15 minutes. A September 2026 schedule is used only as a dated fallback when the
-live page is unavailable. Crowding values are anonymous user reports, expire after two hours,
-and reset when the Streamlit process restarts; `Unknown` means no recent report.
+Penn Libraries hours come from both the official daily summary and each venue's
+dated calendar, then are cached for 15 minutes. A clearly labeled Fall 2026
+regular-week pattern is used only when live pages are unavailable; Thanksgiving
+and post-class dates are excluded from that fallback. Crowding values are
+anonymous user reports, expire after two hours, and reset when the Streamlit
+process restarts; `Unknown` means no recent report.
 
 See [research/README.md](research/README.md) for the formulation and roadmap.

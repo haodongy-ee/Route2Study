@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from html.parser import HTMLParser
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 
 PENN_LIBRARY_HOURS_URL = "https://www.library.upenn.edu/about/hours"
@@ -17,7 +20,12 @@ VENUE_TO_OFFICIAL_NAME = {
     "Fisher Fine Arts Library": "Fisher Fine Arts Library",
     "Holman Biotech Commons": "Holman Biotech Commons",
 }
-SEPTEMBER_2026_REGULAR_HOURS = {
+PENN_LIBRARY_CALENDAR_URLS = {
+    "Van Pelt Library": "https://www.library.upenn.edu/vanpelt/hours",
+    "Fisher Fine Arts Library": "https://www.library.upenn.edu/finearts/hours",
+    "Holman Biotech Commons": "https://www.library.upenn.edu/holman/hours",
+}
+FALL_2026_REGULAR_HOURS = {
     "Van Pelt Library": (
         "10am - 12am",
         "8:30am - 12am",
@@ -46,6 +54,13 @@ SEPTEMBER_2026_REGULAR_HOURS = {
         "12pm - 8pm",
     ),
 }
+PENN_TIMEZONE = ZoneInfo("America/New_York")
+HOURS_VALUE_PATTERN = (
+    r"Closed|24\s+hours|Open\s+24\s+hours|"
+    r"(?:Opens|Closes)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*-\s*"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+)
 
 
 class _VisibleTextParser(HTMLParser):
@@ -78,9 +93,7 @@ def extract_library_hours(page_html: str) -> dict[str, str]:
     for venue_name, official_name in VENUE_TO_OFFICIAL_NAME.items():
         pattern = re.compile(
             rf"{re.escape(official_name)}\s+Hours\s*:\s*"
-            r"(Closed|Opens\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
-            r"\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*-\s*"
-            r"\d{1,2}(?::\d{2})?\s*(?:am|pm))",
+            rf"({HOURS_VALUE_PATTERN})",
             re.IGNORECASE,
         )
         match = pattern.search(text_content)
@@ -90,32 +103,120 @@ def extract_library_hours(page_html: str) -> dict[str, str]:
     return hours
 
 
-def fetch_penn_library_hours(timeout_seconds: int = 8) -> dict[str, str]:
-    """Fetch today's official Penn Libraries hours without extra packages."""
+def extract_calendar_hours(page_html: str, target_date: date) -> str | None:
+    """Extract one date from an individual Penn Libraries calendar page."""
 
+    parser = _VisibleTextParser()
+    parser.feed(page_html)
+    text_content = " ".join(parser.parts)
+    date_label = (
+        f"{target_date.strftime('%a')}, {target_date.strftime('%b')} "
+        f"{target_date.day}, {target_date.year}"
+    )
+    pattern = re.compile(
+        rf"{re.escape(date_label)}\s+(?:Today\s+)?({HOURS_VALUE_PATTERN})",
+        re.IGNORECASE,
+    )
+    match = pattern.search(text_content)
+    return " ".join(match.group(1).split()) if match else None
+
+
+def _fetch_html(url: str, timeout_seconds: int) -> str:
     request = Request(
-        PENN_LIBRARY_HOURS_URL,
-        headers={"User-Agent": "Route2Study/2.0 (+https://route2study.streamlit.app/)"},
+        url,
+        headers={"User-Agent": "Route2Study/2.1 (+https://route2study.streamlit.app/)"},
     )
     with urlopen(request, timeout=timeout_seconds) as response:
-        page_html = response.read().decode("utf-8", errors="replace")
-    return extract_library_hours(page_html)
+        return response.read().decode("utf-8", errors="replace")
 
 
-def september_2026_regular_hours(moment: datetime) -> dict[str, str]:
-    """Official September schedule fallback, verified September 14, 2026.
+def _calendar_url(base_url: str, target_date: date) -> str:
+    query = urlencode(
+        {
+            "month": f"{target_date.month:02d}",
+            "year": target_date.year,
+            "day": target_date.day,
+        }
+    )
+    return f"{base_url}?{query}"
 
-    Holiday and special-event exceptions require the live Penn feed, so the UI
-    identifies this as a fallback whenever the official page cannot be reached.
+
+def fetch_penn_library_hours(
+    planning_moment: datetime | None = None,
+    timeout_seconds: int = 8,
+) -> dict[str, str]:
+    """Fetch official hours with summary-page and calendar-page fallbacks.
+
+    Penn's summary page is the fastest source for today. If it is unavailable,
+    incomplete, or a different planning date is requested, the three venue
+    calendar pages are queried concurrently and parsed for that exact date.
     """
 
-    if moment.year != 2026 or moment.month != 9:
+    moment = planning_moment or datetime.now(PENN_TIMEZONE)
+    if moment.tzinfo is not None:
+        target_date = moment.astimezone(PENN_TIMEZONE).date()
+    else:
+        target_date = moment.date()
+    penn_today = datetime.now(PENN_TIMEZONE).date()
+
+    hours: dict[str, str] = {}
+    errors: list[str] = []
+    if target_date == penn_today:
+        try:
+            hours.update(
+                extract_library_hours(
+                    _fetch_html(PENN_LIBRARY_HOURS_URL, timeout_seconds)
+                )
+            )
+        except (OSError, TimeoutError, ValueError) as error:
+            errors.append(f"summary: {error}")
+
+    missing = [venue for venue in VENUE_TO_OFFICIAL_NAME if venue not in hours]
+    if missing:
+        with ThreadPoolExecutor(max_workers=len(missing)) as executor:
+            futures = {
+                executor.submit(
+                    _fetch_html,
+                    _calendar_url(PENN_LIBRARY_CALENDAR_URLS[venue], target_date),
+                    timeout_seconds,
+                ): venue
+                for venue in missing
+            }
+            for future in as_completed(futures):
+                venue = futures[future]
+                try:
+                    value = extract_calendar_hours(future.result(), target_date)
+                    if value:
+                        hours[venue] = value
+                    else:
+                        errors.append(f"{venue}: date not found")
+                except (OSError, TimeoutError, ValueError) as error:
+                    errors.append(f"{venue}: {error}")
+
+    if not hours:
+        detail = "; ".join(errors) or "no supported locations returned"
+        raise OSError(f"Penn Libraries hours unavailable ({detail})")
+    return hours
+
+
+def fall_2026_regular_hours(moment: datetime) -> dict[str, str]:
+    """Regular fall-term pattern, verified against October 2026 calendars.
+
+    This fallback deliberately excludes Thanksgiving break and dates after the
+    last day of classes. Special-event exceptions still require the live feed,
+    and the UI labels this data as a regular-week estimate.
+    """
+
+    target_date = moment.date()
+    if not date(2026, 8, 25) <= target_date <= date(2026, 12, 7):
+        return {}
+    if date(2026, 11, 26) <= target_date <= date(2026, 11, 29):
         return {}
     # datetime.weekday(): Monday=0; schedules above start with Sunday.
     schedule_index = (moment.weekday() + 1) % 7
     return {
         venue: weekly_hours[schedule_index]
-        for venue, weekly_hours in SEPTEMBER_2026_REGULAR_HOURS.items()
+        for venue, weekly_hours in FALL_2026_REGULAR_HOURS.items()
     }
 
 
@@ -137,8 +238,13 @@ def is_open_at(hours_text: str | None, moment: datetime) -> bool | None:
     normalized = hours_text.strip().lower()
     if normalized == "closed":
         return False
+    if normalized in {"24 hours", "open 24 hours"}:
+        return True
     if normalized.startswith("opens"):
         return moment.time() >= _parse_clock(normalized.removeprefix("opens"))
+    if normalized.startswith("closes"):
+        closing = _parse_clock(normalized.removeprefix("closes"))
+        return closing == time(0, 0) or moment.time() < closing
     if "-" not in normalized:
         return None
 
